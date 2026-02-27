@@ -1,0 +1,13 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: gcn_with_word2vec
+
+token_encoder:
+  enabled: true
+  method: word2vec
+  vector_size: 128
+  window: 5
+  min_count: 1
+  workers: 4
+  epochs: 10

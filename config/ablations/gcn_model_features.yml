@@ -1,0 +1,13 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: gcn_model_features
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44]
+  grid:
+    training.hidden_dim: [128, 192, 256]
+    training.dropout: [0.2, 0.35]
+    training.lr: [0.0003, 0.0005]
+    training.feature_mode: [type_numeric, type_only, numeric_only]

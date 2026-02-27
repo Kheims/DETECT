@@ -1,0 +1,78 @@
+run:
+  name: gcn_baseline
+  artifacts_root: artifacts
+  force_rebuild: false
+  retry_from: null
+  print_commands: true
+  wandb:
+    enabled: false
+    project: mlcq_graphs
+    entity: null
+    tags: []
+
+construction:
+  enabled: true
+  mode: from-json
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  workers: 8
+  chunksize: 8
+  progress_every: 100
+  start_index: 0
+  limit: null
+  overwrite: false
+
+dataset:
+  enabled: true
+  edge_types: [Child, NextToken]
+  max_graphs: null
+  progress_style: auto
+  progress_every: 100
+  memory_stats: true
+  manifest_required: true
+  allow_dot_dir_fallback: false
+
+token_encoder:
+  enabled: false
+  method: word2vec
+  vector_size: 128
+  window: 5
+  min_count: 1
+  workers: 4
+  epochs: 10
+  progress_every: 200
+  max_graphs: null
+
+training:
+  enabled: true
+  num_labels: 4
+  max_graphs: null
+  train_ratio: 0.8
+  val_ratio: 0.1
+  seed: 42
+  epochs: 40
+  patience: 10
+  lr: 0.001
+  weight_decay: 0.0001
+  dropout: 0.2
+  hidden_dim: 256
+  type_emb_dim: 128
+  grad_accum_steps: 1
+  grad_clip_norm: 1.0
+  max_nodes_per_batch: 20000
+  max_edges_per_batch: 0
+  eval_max_nodes_per_batch: 40000
+  eval_max_edges_per_batch: 0
+  num_workers: 0
+  pin_memory: false
+  to_undirected: true
+  threshold_steps: 101
+  device: auto
+  feature_mode: type_numeric
+
+reporting:
+  enabled: true
+
+ablation:
+  enabled: false
+  seeds: [42, 43, 44]
+  grid: {}

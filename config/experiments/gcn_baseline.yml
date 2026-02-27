@@ -1,0 +1,4 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: gcn_baseline
