@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -17,7 +18,6 @@ from torch import nn
 from torch.utils.data import Sampler
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GCNConv, global_mean_pool
 from torch_geometric.utils import to_undirected
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from mlcq_graphs.constants import LABEL_ORDER
+from mlcq_graphs.models import get_model
 
 
 SMELL_LABELS = LABEL_ORDER
@@ -136,82 +137,6 @@ class DynamicBudgetBatchSampler(Sampler[list[int]]):
         total_nodes = sum(max(1, n) for n in self.node_counts)
         estimate = math.ceil(total_nodes / self.max_nodes)
         return max(1, estimate)
-
-
-class GCNGraphClassifier(nn.Module):
-    def __init__(
-        self,
-        num_node_types: int,
-        type_emb_dim: int,
-        num_numeric_feats: int,
-        num_token_feats: int,
-        hidden_dim: int,
-        num_labels: int,
-        dropout: float,
-        use_type_features: bool,
-        use_numeric_features: bool,
-        use_token_features: bool,
-    ) -> None:
-        super().__init__()
-
-        if not use_type_features and not use_numeric_features and not use_token_features:
-            raise ValueError("At least one feature source must be enabled.")
-
-        self.use_type_features = use_type_features
-        self.use_numeric_features = use_numeric_features
-        self.use_token_features = use_token_features
-
-        in_dim = 0
-        if self.use_type_features:
-            self.type_emb = nn.Embedding(num_node_types, type_emb_dim)
-            in_dim += type_emb_dim
-        else:
-            self.type_emb = None
-
-        if self.use_numeric_features:
-            in_dim += num_numeric_feats
-
-        if self.use_token_features:
-            in_dim += num_token_feats
-
-        self.conv1 = GCNConv(in_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, hidden_dim)
-
-        self.lin1 = nn.Linear(hidden_dim, hidden_dim)
-        self.lin2 = nn.Linear(hidden_dim, num_labels)
-        self.dropout = dropout
-
-    def forward(self, data: Data) -> torch.Tensor:
-        feature_parts: list[torch.Tensor] = []
-        if self.use_type_features and self.type_emb is not None:
-            if data.type_id is None:
-                raise ValueError("Missing type_id tensor for type features.")
-            feature_parts.append(self.type_emb(data.type_id))
-        if self.use_numeric_features:
-            if data.x is None:
-                raise ValueError("Missing x tensor for numeric features.")
-            feature_parts.append(data.x)
-
-        if self.use_token_features:
-            token_x = getattr(data, "token_x", None)
-            if token_x is None:
-                raise ValueError("Missing token_x tensor for token features.")
-            feature_parts.append(token_x)
-
-        x = feature_parts[0] if len(feature_parts) == 1 else torch.cat(feature_parts, dim=-1)
-
-        x = self.conv1(x, data.edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
-
-        x = self.conv2(x, data.edge_index)
-        x = F.relu(x)
-
-        g = global_mean_pool(x, data.batch)
-        g = self.lin1(g)
-        g = F.relu(g)
-        g = F.dropout(g, p=self.dropout, training=self.training)
-        return self.lin2(g)
 
 
 def set_seed(seed: int) -> None:
@@ -952,6 +877,30 @@ def parse_args() -> argparse.Namespace:
         choices=["type_numeric", "type_only", "numeric_only"],
         default="type_numeric",
     )
+    parser.add_argument(
+        "--architecture",
+        choices=["gcn", "gat", "graphsage"],
+        default="gcn",
+        help="GNN architecture to use",
+    )
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        default=2,
+        help="Number of GNN message-passing layers (default 2, research recommends 2-3 max for AST graphs)",
+    )
+    parser.add_argument(
+        "--num-heads",
+        type=int,
+        default=4,
+        help="GAT: number of attention heads (ignored for other architectures)",
+    )
+    parser.add_argument(
+        "--aggregation",
+        type=str,
+        default="mean",
+        help="GraphSAGE: aggregation method (ignored for other architectures)",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/runs"))
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument(
@@ -1054,7 +1003,15 @@ def main() -> None:
     num_node_types = max(int(d.type_id.max().item()) for d in dataset) + 1
     num_numeric_feats = int(train_ds[0].x.size(-1)) if use_numeric_features else 0
 
-    model = GCNGraphClassifier(
+    # Architecture-specific kwargs
+    arch_kwargs: dict[str, Any] = {}
+    if args.architecture == "gat":
+        arch_kwargs["num_heads"] = args.num_heads
+    elif args.architecture == "graphsage":
+        arch_kwargs["aggregation"] = args.aggregation
+
+    model = get_model(
+        args.architecture,
         num_node_types=num_node_types,
         type_emb_dim=args.type_emb_dim,
         num_numeric_feats=num_numeric_feats,
@@ -1062,9 +1019,11 @@ def main() -> None:
         hidden_dim=args.hidden_dim,
         num_labels=args.num_labels,
         dropout=args.dropout,
+        num_layers=args.num_layers,
         use_type_features=use_type_features,
         use_numeric_features=use_numeric_features,
         use_token_features=use_token_features,
+        **arch_kwargs,
     ).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -1074,12 +1033,16 @@ def main() -> None:
     )
     pos_weight = compute_pos_weight(train_ds, args.num_labels, device)
 
-    run_dir = args.output_dir / run_name("gcn", args.run_name)
+    run_dir = args.output_dir / run_name(args.architecture, args.run_name)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     config = {
         "args": vars(args),
         "device": str(device),
+        "architecture": args.architecture,
+        "num_layers": args.num_layers,
+        "num_heads": args.num_heads,
+        "aggregation": args.aggregation,
         "feature_mode": args.feature_mode,
         "use_type_features": use_type_features,
         "use_numeric_features": use_numeric_features,
