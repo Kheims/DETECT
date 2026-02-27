@@ -1,0 +1,21 @@
+[project]
+name = "mlcq-graphs"
+version = "0.1.0"
+description = """Project containing experiments relative to Graph Neural Networks training on MLCQ for 
+Code Smells detection"""
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "antlr4-python3-runtime>=4.13.2",
+    "antlr4-tools>=0.2.2",
+    "gensim>=4.3.3",
+    "matplotlib>=3.10.0",
+    "pyyaml>=6.0.2",
+    "torch>=2.9.1",
+    "torch-geometric>=2.7.0",
+]
+
+[project.optional-dependencies]
+wandb = [
+    "wandb>=0.22.0",
+]
