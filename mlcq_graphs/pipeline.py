@@ -737,8 +737,18 @@ class PipelineRunner:
             str(stage_cfg.get("grad_accum_steps", 1)),
             "--grad-clip-norm",
             str(stage_cfg.get("grad_clip_norm", 1.0)),
+        ]
+
+        # Architecture-aware batch budget
+        architecture = str(stage_cfg.get("architecture", "gcn"))
+        if architecture == "gat":
+            max_nodes = int(stage_cfg.get("gat_max_nodes_per_batch", stage_cfg.get("max_nodes_per_batch", 12000)))
+        else:
+            max_nodes = int(stage_cfg.get("max_nodes_per_batch", 20000))
+
+        cmd += [
             "--max-nodes-per-batch",
-            str(stage_cfg.get("max_nodes_per_batch", 20000)),
+            str(max_nodes),
             "--max-edges-per-batch",
             str(stage_cfg.get("max_edges_per_batch", 0)),
             "--eval-max-nodes-per-batch",
@@ -753,6 +763,14 @@ class PipelineRunner:
             str(stage_cfg.get("device", "auto")),
             "--feature-mode",
             str(stage_cfg.get("feature_mode", "type_numeric")),
+            "--architecture",
+            str(stage_cfg.get("architecture", "gcn")),
+            "--num-layers",
+            str(stage_cfg.get("num_layers", 2)),
+            "--num-heads",
+            str(stage_cfg.get("gat_num_heads", 4)),
+            "--aggregation",
+            str(stage_cfg.get("graphsage_aggregation", "mean")),
         ]
 
         if stage_cfg.get("max_graphs") is not None:

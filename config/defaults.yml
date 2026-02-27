@@ -68,6 +68,12 @@ training:
   threshold_steps: 101
   device: auto
   feature_mode: type_numeric
+  # Architecture selection
+  architecture: gcn
+  num_layers: 2
+  gat_num_heads: 4
+  graphsage_aggregation: mean
+  gat_max_nodes_per_batch: 12000
 
 reporting:
   enabled: true
