@@ -75,7 +75,7 @@ training:
   graphsage_aggregation: mean
   gat_max_nodes_per_batch: 12000
   # Loss function selection
-  loss: weighted_bce
+  loss: focal
   focal_loss:
     gamma: 2.0
     alpha: -1.0
@@ -88,5 +88,7 @@ reporting:
 
 ablation:
   enabled: false
-  seeds: [42, 43, 44]
-  grid: {}
+  seeds: [42, 43, 44, 45, 46]
+  grid:
+    training.architecture: [gcn, gat, graphsage]
+    training.loss: [weighted_bce, focal]

@@ -95,22 +95,23 @@ def generate_training_figures(metrics_path: Path, output_dir: Path) -> dict[str,
     return figure_paths
 
 
-def generate_ablation_figure(summary_rows: list[dict[str, Any]], output_path: Path) -> None:
+def generate_ablation_figure(summary_rows: list[dict[str, Any]], output_path: Path, metric: str = "f1_macro_tuned") -> None:
     if not summary_rows:
         return
 
     labels = [str(row.get("combo", {})) for row in summary_rows]
-    means = [_as_float(row.get("f1_micro_tuned_mean"), 0.0) for row in summary_rows]
-    stds = [_as_float(row.get("f1_micro_tuned_std"), 0.0) for row in summary_rows]
+    means = [_as_float(row.get(f"{metric}_mean"), 0.0) for row in summary_rows]
+    stds = [_as_float(row.get(f"{metric}_std"), 0.0) for row in summary_rows]
 
+    metric_label = metric.replace("_", " ").title()
     fig, ax = plt.subplots(figsize=(max(9, len(summary_rows) * 1.5), 5))
     x = list(range(len(summary_rows)))
     ax.bar(x, means, yerr=stds, capsize=4)
     ax.set_ylim(0.0, 1.0)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=25, ha="right")
-    ax.set_title("Ablation: Tuned F1 Micro (mean +/- std)")
-    ax.set_ylabel("F1 Micro")
+    ax.set_title(f"Ablation: {metric_label} (mean +/- std)")
+    ax.set_ylabel(metric_label)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
