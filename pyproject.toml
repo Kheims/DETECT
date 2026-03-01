@@ -9,8 +9,13 @@ dependencies = [
     "antlr4-python3-runtime>=4.13.2",
     "antlr4-tools>=0.2.2",
     "gensim>=4.3.3",
+    "ipython>=9.10.0",
     "matplotlib>=3.10.0",
+    "mcp>=1.26.0",
+    "pyarrow>=23.0.1",
     "pyyaml>=6.0.2",
+    "scikit-learn>=1.5",
+    "scrapling[all,fetchers]>=0.4.1",
     "torch>=2.9.1",
     "torch-geometric>=2.7.0",
 ]
