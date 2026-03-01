@@ -771,7 +771,22 @@ class PipelineRunner:
             str(stage_cfg.get("gat_num_heads", 4)),
             "--aggregation",
             str(stage_cfg.get("graphsage_aggregation", "mean")),
+            "--loss",
+            str(stage_cfg.get("loss", "weighted_bce")),
+            "--early-stopping-metric",
+            str(stage_cfg.get("early_stopping_metric", "macro_f1")),
+            "--early-stopping-min-delta",
+            str(stage_cfg.get("early_stopping_min_delta", 0.0)),
         ]
+
+        focal_cfg = stage_cfg.get("focal_loss", {})
+        if isinstance(focal_cfg, dict):
+            cmd += [
+                "--focal-gamma",
+                str(focal_cfg.get("gamma", 2.0)),
+                "--focal-alpha",
+                str(focal_cfg.get("alpha", -1.0)),
+            ]
 
         if stage_cfg.get("max_graphs") is not None:
             cmd += ["--max-graphs", str(stage_cfg.get("max_graphs"))]
