@@ -321,6 +321,23 @@ class PipelineRunner:
                         "train_throughput": float(metrics.get("profiling", {}).get("train_throughput_graphs_per_sec", 0.0)),
                     }
                     records.append(record)
+
+                    if bool(run_cfg.get("wandb", {}).get("enabled", False)):
+                        trial_wandb_cfg = copy.deepcopy(trial_cfg)
+                        trial_tags = [str(arch), str(loss), f"seed={seed}", "ablation"]
+                        trial_wandb_cfg.setdefault("run", {}).setdefault("wandb", {})["tags"] = trial_tags
+                        training_state = StageState(
+                            name="training",
+                            fingerprint=stage_info["fingerprint"],
+                            stage_dir=stage_info["stage_dir"],
+                            reused=stage_info["reused"],
+                            outputs=stage_info["outputs"],
+                        )
+                        try:
+                            self._log_wandb(config=trial_wandb_cfg, training_state=training_state, report_state=None)
+                        except Exception as wandb_exc:
+                            print(f"[ablation] W&B logging failed for trial {trial_num}: {wandb_exc!r}")
+
                 except Exception as exc:
                     print(f"[ablation] trial FAILED: {exc!r} -- continuing")
                     failed_records.append({"seed": int(seed), "combo": combo, "error": str(exc)})
@@ -497,6 +514,66 @@ class PipelineRunner:
 
         figure_path = report_dir / "ablation_f1_macro_tuned.png"
         generate_ablation_figure(summary_rows=summary_rows, output_path=figure_path, metric="f1_macro_tuned")
+
+        # Console summary table
+        print(f"\n{'='*60}")
+        print(f" Ablation Summary (macro-F1 tuned) | {len(records)} trials")
+        if failed_records:
+            print(f" ({len(failed_records)} trial(s) failed)")
+        print(f"{'='*60}")
+        print(f"{'Arch':<12} {'Loss':<14} {'Mean':>7} {'Std':>7}  {'vs baseline'}")
+        print(f"{'-'*60}")
+
+        baseline_tests = significance_results.get("baseline_tests", {})
+
+        for row in summary_extended_rows:
+            combo = row["combo"]
+            r_arch = str(combo.get("training.architecture", combo.get("architecture", "?")))
+            r_loss = str(combo.get("training.loss", combo.get("loss", "?")))
+            mean_f1 = row["f1_macro_tuned_mean"]
+            std_f1 = row["f1_macro_tuned_std"]
+
+            combo_key = json.dumps(combo, sort_keys=True)
+            bt = baseline_tests.get(combo_key, {})
+            p_val = bt.get("p_value")
+            if combo_key == baseline_key:
+                marker = "(baseline)"
+            elif p_val is None:
+                marker = "n/a"
+            elif p_val < 0.05:
+                marker = f"p={p_val:.3f} *"
+            else:
+                marker = f"p={p_val:.3f}"
+
+            print(f"{r_arch:<12} {r_loss:<14} {mean_f1:>7.4f} {std_f1:>7.4f}  {marker}")
+
+        note_seeds = len(seeds)
+        if note_seeds <= 5:
+            print(f"\n  Note: n={note_seeds} seeds; statistical power is limited")
+        print()
+
+        # W&B artifact upload
+        if bool(run_cfg.get("wandb", {}).get("enabled", False)):
+            try:
+                import wandb  # type: ignore[import-not-found]
+                wandb_cfg = run_cfg.get("wandb", {})
+                run = wandb.init(
+                    project=str(wandb_cfg.get("project", "mlcq_graphs")),
+                    entity=wandb_cfg.get("entity"),
+                    name=f"{base_name}_ablation_summary",
+                    job_type="ablation-summary",
+                    tags=["ablation", "summary"],
+                )
+                artifact = wandb.Artifact(f"{base_name}_ablation_outputs", type="results")
+                artifact.add_file(str(figure_path))
+                artifact.add_file(str(csv_path))
+                artifact.add_file(str(summary_extended_path))
+                run.log_artifact(artifact)
+                run.finish()
+            except ImportError:
+                print("[pipeline] wandb not installed; skipping artifact upload")
+            except Exception as exc:
+                print(f"[ablation] W&B artifact upload failed: {exc!r}")
 
         return {
             "artifacts_root": str(artifacts_root),
