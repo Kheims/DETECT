@@ -74,6 +74,14 @@ training:
   gat_num_heads: 4
   graphsage_aggregation: mean
   gat_max_nodes_per_batch: 12000
+  # Loss function selection
+  loss: weighted_bce
+  focal_loss:
+    gamma: 2.0
+    alpha: -1.0
+  # Early stopping configuration
+  early_stopping_metric: macro_f1
+  early_stopping_min_delta: 0.0
 
 reporting:
   enabled: true
