@@ -16,7 +16,9 @@ import time
 from typing import Any, Callable
 
 from .config import set_nested_value
+from .constants import LABEL_ORDER
 from .reporting import generate_ablation_figure, generate_training_figures
+from .stats import run_baseline_tests, run_pairwise_tests
 from .token_encoder import train_word2vec_from_dot
 
 
@@ -297,6 +299,17 @@ class PipelineRunner:
                     "f1_micro_tuned": float(metrics.get("test_tuned", {}).get("f1_micro", 0.0)),
                     "f1_macro_tuned": float(metrics.get("test_tuned", {}).get("f1_macro", 0.0)),
                     "pr_auc_tuned": float(metrics.get("test_tuned", {}).get("pr_auc_macro", 0.0)),
+                    # extended fields from Plan 01's enriched metrics.json
+                    "hamming_loss_tuned": float(metrics.get("test_tuned", {}).get("hamming_loss", 0.0)),
+                    "subset_acc_tuned": float(metrics.get("test_tuned", {}).get("subset_accuracy", 0.0)),
+                    "pr_auc_fixed": float(metrics.get("test_fixed_0_5", {}).get("pr_auc_macro", 0.0)),
+                    "hamming_loss_fixed": float(metrics.get("test_fixed_0_5", {}).get("hamming_loss", 0.0)),
+                    "subset_acc_fixed": float(metrics.get("test_fixed_0_5", {}).get("subset_accuracy", 0.0)),
+                    "per_label_tuned": metrics.get("test_tuned", {}).get("per_label", {}),
+                    # profiling
+                    "train_duration_sec": float(metrics.get("profiling", {}).get("train_duration_sec", 0.0)),
+                    "peak_gpu_memory_mb": float(metrics.get("profiling", {}).get("peak_gpu_memory_mb", 0.0)),
+                    "train_throughput": float(metrics.get("profiling", {}).get("train_throughput_graphs_per_sec", 0.0)),
                 }
                 records.append(record)
 
@@ -306,6 +319,7 @@ class PipelineRunner:
             grouped.setdefault(key, []).append(record)
 
         summary_rows: list[dict[str, Any]] = []
+        summary_extended_rows: list[dict[str, Any]] = []
         for key, items in grouped.items():
             combo = json.loads(key)
             micro_vals = [row["f1_micro_tuned"] for row in items]
@@ -325,12 +339,118 @@ class PipelineRunner:
                 }
             )
 
+            # per-label aggregation across seeds
+            per_label_means: dict[str, dict[str, float]] = {}
+            for label in LABEL_ORDER:
+                label_f1 = [
+                    float(row["per_label_tuned"].get(label, {}).get("f1", 0.0))
+                    for row in items
+                ]
+                label_prec = [
+                    float(row["per_label_tuned"].get(label, {}).get("precision", 0.0))
+                    for row in items
+                ]
+                label_rec = [
+                    float(row["per_label_tuned"].get(label, {}).get("recall", 0.0))
+                    for row in items
+                ]
+                per_label_means[label] = {
+                    "f1_mean": statistics.mean(label_f1),
+                    "f1_std": statistics.pstdev(label_f1),
+                    "precision_mean": statistics.mean(label_prec),
+                    "precision_std": statistics.pstdev(label_prec),
+                    "recall_mean": statistics.mean(label_rec),
+                    "recall_std": statistics.pstdev(label_rec),
+                }
+
+            micro_fixed_vals = [row["f1_micro_fixed"] for row in items]
+            macro_fixed_vals = [row["f1_macro_fixed"] for row in items]
+            hamming_tuned_vals = [row["hamming_loss_tuned"] for row in items]
+            subset_tuned_vals = [row["subset_acc_tuned"] for row in items]
+            pr_fixed_vals = [row["pr_auc_fixed"] for row in items]
+            train_dur_vals = [row["train_duration_sec"] for row in items]
+            gpu_mem_vals = [row["peak_gpu_memory_mb"] for row in items]
+            throughput_vals = [row["train_throughput"] for row in items]
+
+            summary_extended_rows.append(
+                {
+                    "combo": combo,
+                    "num_runs": len(items),
+                    # existing fields
+                    "f1_micro_tuned_mean": statistics.mean(micro_vals),
+                    "f1_micro_tuned_std": statistics.pstdev(micro_vals),
+                    "f1_macro_tuned_mean": statistics.mean(macro_vals),
+                    "f1_macro_tuned_std": statistics.pstdev(macro_vals),
+                    "pr_auc_tuned_mean": statistics.mean(pr_vals),
+                    "pr_auc_tuned_std": statistics.pstdev(pr_vals),
+                    # extended aggregate metrics
+                    "f1_micro_fixed_mean": statistics.mean(micro_fixed_vals),
+                    "f1_micro_fixed_std": statistics.pstdev(micro_fixed_vals),
+                    "f1_macro_fixed_mean": statistics.mean(macro_fixed_vals),
+                    "f1_macro_fixed_std": statistics.pstdev(macro_fixed_vals),
+                    "hamming_loss_tuned_mean": statistics.mean(hamming_tuned_vals),
+                    "hamming_loss_tuned_std": statistics.pstdev(hamming_tuned_vals),
+                    "subset_acc_tuned_mean": statistics.mean(subset_tuned_vals),
+                    "subset_acc_tuned_std": statistics.pstdev(subset_tuned_vals),
+                    "pr_auc_fixed_mean": statistics.mean(pr_fixed_vals),
+                    "pr_auc_fixed_std": statistics.pstdev(pr_fixed_vals),
+                    # per-label means
+                    "per_label_means": per_label_means,
+                    # profiling means
+                    "avg_train_duration_sec": statistics.mean(train_dur_vals),
+                    "avg_peak_gpu_memory_mb": statistics.mean(gpu_mem_vals),
+                    "avg_train_throughput": statistics.mean(throughput_vals),
+                }
+            )
+
+        # significance tests vs GCN+weighted_bce baseline
+        combo_scores: dict[str, list[float]] = {
+            key: [row["f1_macro_tuned"] for row in items]
+            for key, items in grouped.items()
+        }
+        baseline_key: str | None = None
+        for key in grouped:
+            combo_dict = json.loads(key)
+            arch_val = combo_dict.get("training.architecture", combo_dict.get("architecture", ""))
+            loss_val = combo_dict.get("training.loss", combo_dict.get("loss", ""))
+            if str(arch_val).lower() == "gcn" and str(loss_val).lower() == "weighted_bce":
+                baseline_key = key
+                break
+
+        significance_results: dict[str, Any] = {}
+        if baseline_key is not None:
+            significance_results["baseline_tests"] = run_baseline_tests(
+                combo_scores, baseline_key, "f1_macro_tuned"
+            )
+            significance_results["pairwise_tests"] = run_pairwise_tests(
+                combo_scores, "f1_macro_tuned"
+            )
+        else:
+            significance_results["baseline_tests"] = {}
+            significance_results["pairwise_tests"] = run_pairwise_tests(
+                combo_scores, "f1_macro_tuned"
+            )
+            significance_results["note"] = "no gcn+weighted_bce baseline found; baseline_tests skipped"
+
         records_path = report_dir / "records.json"
         summary_path = report_dir / "summary.json"
         csv_path = report_dir / "summary.csv"
+        summary_extended_path = report_dir / "summary_extended.json"
 
         records_path.write_text(json.dumps(jsonable(records), indent=2))
         summary_path.write_text(json.dumps(jsonable(summary_rows), indent=2))
+
+        summary_extended_doc = {
+            "summary": jsonable(summary_extended_rows),
+            "significance": jsonable(significance_results),
+            "metadata": {
+                "baseline_key": baseline_key,
+                "num_seeds": len(seeds),
+                "metric_tested": "f1_macro_tuned",
+                "note": "n=3 seeds; statistical power is limited" if len(seeds) <= 5 else None,
+            },
+        }
+        summary_extended_path.write_text(json.dumps(summary_extended_doc, indent=2))
 
         with csv_path.open("w", newline="") as csv_file:
             writer = csv.writer(csv_file)
@@ -371,6 +491,7 @@ class PipelineRunner:
                 "records_path": str(records_path),
                 "summary_path": str(summary_path),
                 "summary_csv": str(csv_path),
+                "summary_extended_path": str(summary_extended_path),
                 "figure_path": str(figure_path),
             },
         }
