@@ -269,6 +269,9 @@ class PipelineRunner:
         combos = list(itertools.product(*value_lists))
 
         records: list[dict[str, Any]] = []
+        failed_records: list[dict[str, Any]] = []
+        total_trials = len(combos) * len(seeds)
+        trial_num = 0
         for combo_idx, combo_values in enumerate(combos, start=1):
             combo = {grid_keys[i]: combo_values[i] for i in range(len(grid_keys))}
             for seed in seeds:
@@ -281,37 +284,49 @@ class PipelineRunner:
                     f"{base_name}_c{combo_idx:03d}_s{seed}"
                 )
 
-                trial_result = self._run_single(trial_cfg)
-                stage_info = trial_result["stages"].get("training")
-                if stage_info is None:
-                    raise ValueError("Training stage was not executed in ablation trial")
+                trial_num += 1
+                arch = combo.get("training.architecture", "?")
+                loss = combo.get("training.loss", "?")
+                print(f"[ablation] Trial {trial_num}/{total_trials}: {arch}+{loss} seed={seed}")
 
-                metrics_path = Path(stage_info["outputs"]["metrics_path"])
-                metrics = json.loads(metrics_path.read_text())
+                try:
+                    trial_result = self._run_single(trial_cfg)
+                    stage_info = trial_result["stages"].get("training")
+                    if stage_info is None:
+                        raise ValueError("Training stage was not executed in ablation trial")
 
-                record = {
-                    "seed": int(seed),
-                    "combo": combo,
-                    "run_dir": stage_info["outputs"]["run_dir"],
-                    "best_epoch": int(metrics.get("best_epoch", -1)),
-                    "f1_micro_fixed": float(metrics.get("test_fixed_0_5", {}).get("f1_micro", 0.0)),
-                    "f1_macro_fixed": float(metrics.get("test_fixed_0_5", {}).get("f1_macro", 0.0)),
-                    "f1_micro_tuned": float(metrics.get("test_tuned", {}).get("f1_micro", 0.0)),
-                    "f1_macro_tuned": float(metrics.get("test_tuned", {}).get("f1_macro", 0.0)),
-                    "pr_auc_tuned": float(metrics.get("test_tuned", {}).get("pr_auc_macro", 0.0)),
-                    # extended fields from Plan 01's enriched metrics.json
-                    "hamming_loss_tuned": float(metrics.get("test_tuned", {}).get("hamming_loss", 0.0)),
-                    "subset_acc_tuned": float(metrics.get("test_tuned", {}).get("subset_accuracy", 0.0)),
-                    "pr_auc_fixed": float(metrics.get("test_fixed_0_5", {}).get("pr_auc_macro", 0.0)),
-                    "hamming_loss_fixed": float(metrics.get("test_fixed_0_5", {}).get("hamming_loss", 0.0)),
-                    "subset_acc_fixed": float(metrics.get("test_fixed_0_5", {}).get("subset_accuracy", 0.0)),
-                    "per_label_tuned": metrics.get("test_tuned", {}).get("per_label", {}),
-                    # profiling
-                    "train_duration_sec": float(metrics.get("profiling", {}).get("train_duration_sec", 0.0)),
-                    "peak_gpu_memory_mb": float(metrics.get("profiling", {}).get("peak_gpu_memory_mb", 0.0)),
-                    "train_throughput": float(metrics.get("profiling", {}).get("train_throughput_graphs_per_sec", 0.0)),
-                }
-                records.append(record)
+                    metrics_path = Path(stage_info["outputs"]["metrics_path"])
+                    metrics = json.loads(metrics_path.read_text())
+
+                    record = {
+                        "seed": int(seed),
+                        "combo": combo,
+                        "run_dir": stage_info["outputs"]["run_dir"],
+                        "best_epoch": int(metrics.get("best_epoch", -1)),
+                        "f1_micro_fixed": float(metrics.get("test_fixed_0_5", {}).get("f1_micro", 0.0)),
+                        "f1_macro_fixed": float(metrics.get("test_fixed_0_5", {}).get("f1_macro", 0.0)),
+                        "f1_micro_tuned": float(metrics.get("test_tuned", {}).get("f1_micro", 0.0)),
+                        "f1_macro_tuned": float(metrics.get("test_tuned", {}).get("f1_macro", 0.0)),
+                        "pr_auc_tuned": float(metrics.get("test_tuned", {}).get("pr_auc_macro", 0.0)),
+                        # extended fields from Plan 01's enriched metrics.json
+                        "hamming_loss_tuned": float(metrics.get("test_tuned", {}).get("hamming_loss", 0.0)),
+                        "subset_acc_tuned": float(metrics.get("test_tuned", {}).get("subset_accuracy", 0.0)),
+                        "pr_auc_fixed": float(metrics.get("test_fixed_0_5", {}).get("pr_auc_macro", 0.0)),
+                        "hamming_loss_fixed": float(metrics.get("test_fixed_0_5", {}).get("hamming_loss", 0.0)),
+                        "subset_acc_fixed": float(metrics.get("test_fixed_0_5", {}).get("subset_accuracy", 0.0)),
+                        "per_label_tuned": metrics.get("test_tuned", {}).get("per_label", {}),
+                        # profiling
+                        "train_duration_sec": float(metrics.get("profiling", {}).get("train_duration_sec", 0.0)),
+                        "peak_gpu_memory_mb": float(metrics.get("profiling", {}).get("peak_gpu_memory_mb", 0.0)),
+                        "train_throughput": float(metrics.get("profiling", {}).get("train_throughput_graphs_per_sec", 0.0)),
+                    }
+                    records.append(record)
+                except Exception as exc:
+                    print(f"[ablation] trial FAILED: {exc!r} -- continuing")
+                    failed_records.append({"seed": int(seed), "combo": combo, "error": str(exc)})
+
+        if not records:
+            raise RuntimeError("all ablation trials failed; no results to aggregate")
 
         grouped: dict[str, list[dict[str, Any]]] = {}
         for record in records:
@@ -447,7 +462,7 @@ class PipelineRunner:
                 "baseline_key": baseline_key,
                 "num_seeds": len(seeds),
                 "metric_tested": "f1_macro_tuned",
-                "note": "n=3 seeds; statistical power is limited" if len(seeds) <= 5 else None,
+                "note": f"n={len(seeds)} seeds; statistical power is limited" if len(seeds) <= 5 else None,
             },
         }
         summary_extended_path.write_text(json.dumps(summary_extended_doc, indent=2))
@@ -480,14 +495,16 @@ class PipelineRunner:
                     ]
                 )
 
-        figure_path = report_dir / "ablation_f1_micro_tuned.png"
-        generate_ablation_figure(summary_rows=summary_rows, output_path=figure_path)
+        figure_path = report_dir / "ablation_f1_macro_tuned.png"
+        generate_ablation_figure(summary_rows=summary_rows, output_path=figure_path, metric="f1_macro_tuned")
 
         return {
             "artifacts_root": str(artifacts_root),
             "ablation": {
                 "num_combos": len(combos),
                 "num_runs": len(records),
+                "failed_trials": len(failed_records),
+                "failed_records": failed_records,
                 "records_path": str(records_path),
                 "summary_path": str(summary_path),
                 "summary_csv": str(csv_path),
