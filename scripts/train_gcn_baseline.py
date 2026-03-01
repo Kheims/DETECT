@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from mlcq_graphs.constants import LABEL_ORDER
+from mlcq_graphs.evaluation import evaluate_full
 from mlcq_graphs.models import get_model
 from mlcq_graphs.training import Trainer, TrainResult, build_loss_fn
 
@@ -651,7 +652,7 @@ def compute_pr_auc(y_true: torch.Tensor, probs: torch.Tensor) -> tuple[float, li
 
         recall = torch.cat([torch.tensor([0.0]), recall])
         precision = torch.cat([torch.tensor([1.0]), precision])
-        area = torch.trapz(precision, recall).item()
+        area = torch.trapezoid(precision, recall).item()
         per_label.append(float(area))
 
     macro = float(sum(per_label) / len(per_label))
@@ -1088,6 +1089,9 @@ def main() -> None:
         pin_memory=args.pin_memory,
     )
 
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device)
+
     train_start = time.perf_counter()
     result: TrainResult = trainer.fit(
         train_loader_fn=train_loader_fn,
@@ -1096,6 +1100,7 @@ def main() -> None:
         evaluate_fn=evaluate,
     )
     train_duration_sec = time.perf_counter() - train_start
+    peak_gpu_bytes = torch.cuda.max_memory_allocated(device) if torch.cuda.is_available() else 0
 
     best_epoch = result.best_epoch
 
@@ -1133,22 +1138,33 @@ def main() -> None:
         steps=args.threshold_steps,
     )
 
-    test_metrics_fixed = evaluate(
-        model=model,
-        loader=test_loader,
-        device=device,
-        num_labels=args.num_labels,
-        thresholds=None,
-    )
-    test_metrics_tuned = evaluate(
-        model=model,
-        loader=test_loader,
-        device=device,
-        num_labels=args.num_labels,
-        thresholds=thresholds,
-    )
-
     smell_labels = SMELL_LABELS[: args.num_labels]
+
+    eval_start = time.perf_counter()
+    test_logits, test_targets = collect_logits_and_targets(
+        model=model,
+        loader=test_loader,
+        device=device,
+        num_labels=args.num_labels,
+    )
+    eval_duration_sec = time.perf_counter() - eval_start
+    eval_throughput = len(test_ds) / max(eval_duration_sec, 1e-9)
+
+    total_train_graphs = len(train_ds) * max(result.best_epoch, 1)
+    train_throughput = total_train_graphs / max(train_duration_sec, 1e-9)
+
+    test_metrics_fixed = evaluate_full(
+        logits=test_logits,
+        y_true=test_targets,
+        thresholds=None,
+        label_names=smell_labels,
+    )
+    test_metrics_tuned = evaluate_full(
+        logits=test_logits,
+        y_true=test_targets,
+        thresholds=thresholds,
+        label_names=smell_labels,
+    )
     print("\nBest epoch:", best_epoch)
     print("Thresholds:", {smell_labels[i]: float(thresholds[i]) for i in range(len(smell_labels))})
     print(
@@ -1159,13 +1175,17 @@ def main() -> None:
         "Test (fixed 0.5) | "
         f"f1_micro={float(test_metrics_fixed['f1_micro']):.4f} | "
         f"f1_macro={float(test_metrics_fixed['f1_macro']):.4f} | "
-        f"pr_auc={float(test_metrics_fixed['pr_auc_macro']):.4f}"
+        f"pr_auc={float(test_metrics_fixed['pr_auc_macro']):.4f} | "
+        f"hamming={float(test_metrics_fixed['hamming_loss']):.4f} | "
+        f"subset_acc={float(test_metrics_fixed['subset_accuracy']):.4f}"
     )
     print(
         "Test (tuned)    | "
         f"f1_micro={float(test_metrics_tuned['f1_micro']):.4f} | "
         f"f1_macro={float(test_metrics_tuned['f1_macro']):.4f} | "
-        f"pr_auc={float(test_metrics_tuned['pr_auc_macro']):.4f}"
+        f"pr_auc={float(test_metrics_tuned['pr_auc_macro']):.4f} | "
+        f"hamming={float(test_metrics_tuned['hamming_loss']):.4f} | "
+        f"subset_acc={float(test_metrics_tuned['subset_accuracy']):.4f}"
     )
 
     artifacts = {
@@ -1186,6 +1206,15 @@ def main() -> None:
         },
         "test_fixed_0_5": test_metrics_fixed,
         "test_tuned": test_metrics_tuned,
+        "profiling": {
+            "train_duration_sec": round(train_duration_sec, 3),
+            "avg_epoch_duration_sec": round(train_duration_sec / max(result.best_epoch, 1), 3),
+            "peak_gpu_memory_bytes": peak_gpu_bytes,
+            "peak_gpu_memory_mb": round(peak_gpu_bytes / 1024 ** 2, 2),
+            "train_throughput_graphs_per_sec": round(train_throughput, 2),
+            "eval_throughput_graphs_per_sec": round(eval_throughput, 2),
+            "eval_duration_sec": round(eval_duration_sec, 3),
+        },
     }
 
     (run_dir / "metrics.json").write_text(json.dumps(artifacts, indent=2))
