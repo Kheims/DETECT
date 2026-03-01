@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import Sampler
 from torch_geometric.data import Data
@@ -26,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from mlcq_graphs.constants import LABEL_ORDER
 from mlcq_graphs.models import get_model
+from mlcq_graphs.training import Trainer, TrainResult, build_loss_fn
 
 
 SMELL_LABELS = LABEL_ORDER
@@ -38,15 +38,6 @@ class DatasetSummary:
     zero_label_graphs: int
     node_stats: dict[str, float | int]
     edge_stats: dict[str, float | int]
-
-
-@dataclass
-class EpochMetrics:
-    epoch: int
-    train_loss: float
-    val_f1_micro: float
-    val_f1_macro: float
-    val_pr_auc_macro: float
 
 
 class DynamicBudgetBatchSampler(Sampler[list[int]]):
@@ -755,59 +746,6 @@ def tune_thresholds(
     return thresholds
 
 
-def compute_pos_weight(train_ds: list[Data], num_labels: int, device: torch.device) -> torch.Tensor:
-    y = label_matrix(train_ds, num_labels).float()
-    pos = y.sum(dim=0)
-    neg = y.size(0) - pos
-    safe = torch.where(pos > 0, neg / (pos + 1e-8), torch.ones_like(pos))
-    return safe.to(device)
-
-
-def train_one_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-    num_labels: int,
-    pos_weight: torch.Tensor,
-    grad_accum_steps: int,
-    grad_clip_norm: float,
-) -> float:
-    model.train()
-    total_loss = 0.0
-    total_graphs = 0
-    step_count = 0
-
-    optimizer.zero_grad(set_to_none=True)
-
-    for step_count, batch in enumerate(loader, start=1):
-        batch = batch.to(device)
-        logits = model(batch)
-        y = batch.y.view(-1, num_labels).float()
-        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
-
-        scaled_loss = loss / max(1, grad_accum_steps)
-        scaled_loss.backward()
-
-        if step_count % grad_accum_steps == 0:
-            if grad_clip_norm > 0:
-                nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-
-        batch_graphs = int(batch.num_graphs)
-        total_loss += float(loss.item()) * batch_graphs
-        total_graphs += batch_graphs
-
-    if step_count > 0 and step_count % grad_accum_steps != 0:
-        if grad_clip_norm > 0:
-            nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-
-    return total_loss / max(1, total_graphs)
-
-
 def select_device(device_arg: str) -> torch.device:
     if device_arg == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -900,6 +838,38 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="mean",
         help="GraphSAGE: aggregation method (ignored for other architectures)",
+    )
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="weighted_bce",
+        choices=["weighted_bce", "focal"],
+        help="Loss function to use (default: weighted_bce)",
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=2.0,
+        help="Focal loss focusing parameter gamma (ignored when --loss=weighted_bce)",
+    )
+    parser.add_argument(
+        "--focal-alpha",
+        type=float,
+        default=-1.0,
+        help="Focal loss alpha parameter; -1.0 disables scalar alpha (ignored when --loss=weighted_bce)",
+    )
+    parser.add_argument(
+        "--early-stopping-metric",
+        type=str,
+        default="macro_f1",
+        choices=["macro_f1", "pr_auc"],
+        help="Validation metric to monitor for early stopping",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.0,
+        help="Minimum improvement in early stopping metric to count as improvement",
     )
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/runs"))
     parser.add_argument("--run-name", type=str, default=None)
@@ -1031,7 +1001,15 @@ def main() -> None:
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
-    pos_weight = compute_pos_weight(train_ds, args.num_labels, device)
+
+    loss_fn = build_loss_fn(
+        loss_name=args.loss,
+        train_ds=train_ds,
+        num_labels=args.num_labels,
+        device=device,
+        focal_gamma=args.focal_gamma,
+        focal_alpha=args.focal_alpha,
+    )
 
     run_dir = args.output_dir / run_name(args.architecture, args.run_name)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1047,6 +1025,11 @@ def main() -> None:
         "use_type_features": use_type_features,
         "use_numeric_features": use_numeric_features,
         "use_token_features": use_token_features,
+        "loss": args.loss,
+        "focal_gamma": args.focal_gamma,
+        "focal_alpha": args.focal_alpha,
+        "early_stopping_metric": args.early_stopping_metric,
+        "early_stopping_min_delta": args.early_stopping_min_delta,
         "train_summary": asdict(train_summary),
         "val_summary": asdict(val_summary),
         "test_summary": asdict(test_summary),
@@ -1060,21 +1043,30 @@ def main() -> None:
         "num_numeric_feats": num_numeric_feats,
         "num_token_feats": token_feature_dim,
         "token_feature_stats": token_feature_stats,
-        "pos_weight": pos_weight.detach().cpu().tolist(),
         "split_path": str(args.split_path) if args.split_path is not None else None,
     }
     (run_dir / "config.json").write_text(json.dumps(config, indent=2, default=str))
 
-    history: list[EpochMetrics] = []
-    best_val_f1_macro = -1.0
-    best_epoch = -1
-    no_improve = 0
+    trainer = Trainer(
+        model=model,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
+        device=device,
+        epochs=args.epochs,
+        patience=args.patience,
+        min_delta=args.early_stopping_min_delta,
+        early_stopping_metric=args.early_stopping_metric,
+        checkpoint_dir=run_dir,
+        config_snapshot=config,
+        seed=args.seed,
+        grad_accum_steps=args.grad_accum_steps,
+        grad_clip_norm=args.grad_clip_norm,
+        architecture=args.architecture,
+        loss_name=args.loss,
+    )
 
-    best_path = run_dir / "best_model.pt"
-
-    train_start = time.perf_counter()
-    for epoch in range(1, args.epochs + 1):
-        train_loader = build_loader(
+    def train_loader_fn(epoch: int) -> DataLoader:
+        return build_loader(
             dataset=train_ds,
             max_nodes_per_batch=args.max_nodes_per_batch,
             max_edges_per_batch=edge_budget,
@@ -1084,75 +1076,28 @@ def main() -> None:
             num_workers=args.num_workers,
             pin_memory=args.pin_memory,
         )
-        val_loader = build_loader(
-            dataset=val_ds,
-            max_nodes_per_batch=args.eval_max_nodes_per_batch,
-            max_edges_per_batch=eval_edge_budget,
-            shuffle=False,
-            seed=args.seed,
-            epoch=0,
-            num_workers=args.num_workers,
-            pin_memory=args.pin_memory,
-        )
 
-        train_loss = train_one_epoch(
-            model=model,
-            loader=train_loader,
-            optimizer=optimizer,
-            device=device,
-            num_labels=args.num_labels,
-            pos_weight=pos_weight,
-            grad_accum_steps=args.grad_accum_steps,
-            grad_clip_norm=args.grad_clip_norm,
-        )
+    val_loader = build_loader(
+        dataset=val_ds,
+        max_nodes_per_batch=args.eval_max_nodes_per_batch,
+        max_edges_per_batch=eval_edge_budget,
+        shuffle=False,
+        seed=args.seed,
+        epoch=0,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+    )
 
-        val_metrics = evaluate(
-            model=model,
-            loader=val_loader,
-            device=device,
-            num_labels=args.num_labels,
-            thresholds=None,
-        )
-
-        epoch_metrics = EpochMetrics(
-            epoch=epoch,
-            train_loss=float(train_loss),
-            val_f1_micro=float(val_metrics["f1_micro"]),
-            val_f1_macro=float(val_metrics["f1_macro"]),
-            val_pr_auc_macro=float(val_metrics["pr_auc_macro"]),
-        )
-        history.append(epoch_metrics)
-
-        print(
-            f"Epoch {epoch:03d} | loss={epoch_metrics.train_loss:.4f} | "
-            f"val_f1_micro={epoch_metrics.val_f1_micro:.4f} | "
-            f"val_f1_macro={epoch_metrics.val_f1_macro:.4f} | "
-            f"val_pr_auc={epoch_metrics.val_pr_auc_macro:.4f}"
-        )
-
-        if epoch_metrics.val_f1_macro > best_val_f1_macro:
-            best_val_f1_macro = epoch_metrics.val_f1_macro
-            best_epoch = epoch
-            no_improve = 0
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "epoch": epoch,
-                    "val_f1_macro": best_val_f1_macro,
-                },
-                best_path,
-            )
-        else:
-            no_improve += 1
-
-        if no_improve >= args.patience:
-            print(f"Early stopping at epoch {epoch} (patience={args.patience}).")
-            break
-
+    train_start = time.perf_counter()
+    result: TrainResult = trainer.fit(
+        train_loader_fn=train_loader_fn,
+        val_loader=val_loader,
+        num_labels=args.num_labels,
+        evaluate_fn=evaluate,
+    )
     train_duration_sec = time.perf_counter() - train_start
 
-    best_checkpoint = torch.load(best_path, map_location=device)
-    model.load_state_dict(best_checkpoint["model_state_dict"])
+    best_epoch = result.best_epoch
 
     val_loader = build_loader(
         dataset=val_ds,
@@ -1225,8 +1170,10 @@ def main() -> None:
 
     artifacts = {
         "best_epoch": best_epoch,
+        "stopped_early": result.stopped_early,
+        "best_val_metric": result.best_val_metric,
         "train_duration_sec": train_duration_sec,
-        "history": [asdict(item) for item in history],
+        "history": result.history,
         "threshold_tuning": {
             "strategy": "per_label_val_f1_grid",
             "threshold_steps": int(args.threshold_steps),
