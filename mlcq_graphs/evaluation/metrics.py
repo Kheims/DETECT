@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import math
+import warnings
+
 import numpy as np
 import torch
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    balanced_accuracy_score,
     f1_score,
     hamming_loss,
+    matthews_corrcoef,
     multilabel_confusion_matrix,
     precision_score,
     recall_score,
+    roc_auc_score,
 )
 
 
@@ -56,6 +62,38 @@ def compute_full_metrics(
 
     pr_auc_macro = float(np.mean(pr_auc_per_label))
 
+    balanced_acc_per_label: list[float | None] = []
+    mcc_per_label: list[float | None] = []
+    roc_auc_per_label: list[float | None] = []
+
+    for i in range(num_labels):
+        y_t = y_true_np[:, i]
+        y_p = y_pred_np[:, i]
+        p = probs_np[:, i]
+
+        if y_t.sum() == 0:
+            balanced_acc_per_label.append(None)
+            mcc_per_label.append(None)
+            roc_auc_per_label.append(None)
+            continue
+
+        balanced_acc_per_label.append(float(balanced_accuracy_score(y_t, y_p)))
+        mcc_per_label.append(float(matthews_corrcoef(y_t, y_p)))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                roc_auc_per_label.append(float(roc_auc_score(y_t, p)))
+            except Exception:
+                roc_auc_per_label.append(None)
+
+    valid_ba = [v for v in balanced_acc_per_label if v is not None]
+    valid_mcc = [v for v in mcc_per_label if v is not None]
+    valid_roc = [v for v in roc_auc_per_label if v is not None]
+
+    balanced_acc_macro = float(np.mean(valid_ba)) if valid_ba else 0.0
+    mcc_macro = float(np.mean(valid_mcc)) if valid_mcc else 0.0
+    roc_auc_macro = float(np.mean(valid_roc)) if valid_roc else 0.0
+
     mcm = multilabel_confusion_matrix(y_true_np, y_pred_np)
 
     per_label: dict[str, dict] = {}
@@ -73,6 +111,9 @@ def compute_full_metrics(
             "fp": fp,
             "tn": tn,
             "fn": fn,
+            "balanced_acc": balanced_acc_per_label[i],
+            "mcc": mcc_per_label[i],
+            "roc_auc": roc_auc_per_label[i],
         }
 
     return {
@@ -81,9 +122,15 @@ def compute_full_metrics(
         "pr_auc_macro": pr_auc_macro,
         "hamming_loss": h_loss,
         "subset_accuracy": subset_acc,
+        "balanced_acc_macro": balanced_acc_macro,
+        "mcc_macro": mcc_macro,
+        "roc_auc_macro": roc_auc_macro,
         # flat lists for backward compatibility with pipeline ablation code
         "f1_per_label": f1_per_label,
         "pr_auc_per_label": pr_auc_per_label,
+        "balanced_acc_per_label": balanced_acc_per_label,
+        "mcc_per_label": mcc_per_label,
+        "roc_auc_per_label": roc_auc_per_label,
         "per_label": per_label,
     }
 
@@ -113,7 +160,8 @@ def evaluate_full(
     if logits.numel() == 0:
         empty_per_label = {
             name: {"precision": 0.0, "recall": 0.0, "f1": 0.0, "pr_auc": 0.0,
-                   "tp": 0, "fp": 0, "tn": 0, "fn": 0}
+                   "tp": 0, "fp": 0, "tn": 0, "fn": 0,
+                   "balanced_acc": 0.0, "mcc": 0.0, "roc_auc": 0.0}
             for name in label_names
         }
         return {
@@ -122,8 +170,14 @@ def evaluate_full(
             "pr_auc_macro": 0.0,
             "hamming_loss": 0.0,
             "subset_accuracy": 0.0,
+            "balanced_acc_macro": 0.0,
+            "mcc_macro": 0.0,
+            "roc_auc_macro": 0.0,
             "f1_per_label": [0.0] * num_labels,
             "pr_auc_per_label": [0.0] * num_labels,
+            "balanced_acc_per_label": [0.0] * num_labels,
+            "mcc_per_label": [0.0] * num_labels,
+            "roc_auc_per_label": [0.0] * num_labels,
             "per_label": empty_per_label,
         }
 
