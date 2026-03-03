@@ -12,7 +12,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
+from sklearn.metrics import f1_score as sklearn_f1_score
+from sklearn.metrics import precision_recall_curve, roc_curve
 from torch import nn
 from torch.utils.data import Sampler
 from torch_geometric.data import Data
@@ -1187,6 +1190,56 @@ def main() -> None:
         f"hamming={float(test_metrics_tuned['hamming_loss']):.4f} | "
         f"subset_acc={float(test_metrics_tuned['subset_accuracy']):.4f}"
     )
+
+    # Curve data for publication plots
+    test_probs_np = torch.sigmoid(test_logits).numpy()
+    test_y_np = test_targets.int().numpy()
+
+    pr_curves: dict[str, dict] = {}
+    roc_curves_data: dict[str, dict] = {}
+    f1_vs_threshold: dict[str, dict] = {}
+
+    for i, name in enumerate(smell_labels):
+        y_t = test_y_np[:, i]
+        p = test_probs_np[:, i]
+
+        if y_t.sum() == 0:
+            pr_curves[name] = {}
+            roc_curves_data[name] = {}
+            f1_vs_threshold[name] = {}
+            continue
+
+        prec, rec, pr_thresh = precision_recall_curve(y_t, p)
+        fpr, tpr, roc_thresh = roc_curve(y_t, p)
+
+        thresh_grid = np.linspace(0.0, 1.0, args.threshold_steps).tolist()
+        f1_vals = [
+            float(sklearn_f1_score(y_t, (p >= t).astype(int), zero_division=0))
+            for t in thresh_grid
+        ]
+
+        pr_curves[name] = {
+            "precision": prec.tolist(),
+            "recall": rec.tolist(),
+            "thresholds": pr_thresh.tolist(),
+        }
+        roc_curves_data[name] = {
+            "fpr": fpr.tolist(),
+            "tpr": tpr.tolist(),
+            "thresholds": roc_thresh.tolist(),
+        }
+        f1_vs_threshold[name] = {
+            "thresholds": thresh_grid,
+            "f1": f1_vals,
+            "tuned_threshold": float(thresholds[i]),
+        }
+
+    curves_payload = {
+        "pr_curves": pr_curves,
+        "roc_curves": roc_curves_data,
+        "f1_vs_threshold": f1_vs_threshold,
+    }
+    (run_dir / "curves.json").write_text(json.dumps(curves_payload, indent=2))
 
     artifacts = {
         "best_epoch": best_epoch,
