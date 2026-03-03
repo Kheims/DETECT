@@ -20,6 +20,7 @@ from .constants import LABEL_ORDER
 from .reporting import generate_ablation_figure, generate_training_figures
 from .stats import run_baseline_tests, run_pairwise_tests
 from .token_encoder import train_word2vec_from_dot
+from .visualization import generate_publication_figures
 
 
 def stable_fingerprint(payload: dict[str, Any]) -> str:
@@ -1056,10 +1057,24 @@ class PipelineRunner:
             "training_fingerprint": training_state.fingerprint,
         }
         fingerprint = stable_fingerprint(jsonable(payload))
+        metrics_path = Path(training_state.outputs["metrics_path"])
         output_map = generate_training_figures(
-            metrics_path=Path(training_state.outputs["metrics_path"]),
+            metrics_path=metrics_path,
             output_dir=fig_dir,
         )
+
+        curves_path = run_dir / "curves.json"
+        if curves_path.exists():
+            try:
+                pub_map = generate_publication_figures(
+                    metrics_path=metrics_path,
+                    curves_path=curves_path,
+                    output_dir=fig_dir / "publication",
+                    label_names=LABEL_ORDER,
+                )
+                output_map.update(pub_map)
+            except Exception as exc:
+                print(f"[pipeline] publication figures failed: {exc!r}")
 
         outputs = {
             "figure_dir": str(fig_dir),
@@ -1111,6 +1126,9 @@ class PipelineRunner:
                 "test/f1_micro_tuned": float(test_tuned.get("f1_micro", 0.0)),
                 "test/f1_macro_tuned": float(test_tuned.get("f1_macro", 0.0)),
                 "test/pr_auc_tuned": float(test_tuned.get("pr_auc_macro", 0.0)),
+                "test/balanced_acc_tuned": float(test_tuned.get("balanced_acc_macro", 0.0)),
+                "test/mcc_tuned": float(test_tuned.get("mcc_macro", 0.0)),
+                "test/roc_auc_tuned": float(test_tuned.get("roc_auc_macro", 0.0)),
             }
         )
 
