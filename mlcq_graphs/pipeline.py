@@ -8,7 +8,6 @@ import hashlib
 import itertools
 import json
 from pathlib import Path
-import shlex
 import statistics
 import subprocess
 import sys
@@ -105,16 +104,13 @@ class PipelineRunner:
         stage_name: str,
         runner: Callable[[], StageState],
     ) -> StageState:
-        print(f"[pipeline] stage={stage_name} start")
+        print(f"[pipeline] {stage_name}", end="  ", flush=True)
         started = time.perf_counter()
         stage_state = runner()
         elapsed = time.perf_counter() - started
         mode = "reused" if stage_state.reused else "rebuilt"
-        output_hint = self._stage_output_hint(stage_state)
-        print(
-            f"[pipeline] stage={stage_name} done mode={mode} elapsed_sec={elapsed:.2f} "
-            f"fingerprint={stage_state.fingerprint[:12]} output={output_hint}"
-        )
+        fp_short = stage_state.fingerprint[:8]
+        print(f"{mode}  {elapsed:.1f}s  {fp_short}")
         return stage_state
 
     def _normalize_retry_from(self, value: Any) -> str | None:
@@ -239,7 +235,12 @@ class PipelineRunner:
             self._log_wandb(config=config, training_state=training_state, report_state=report_state)
 
         elapsed_total = time.perf_counter() - pipeline_started
-        print(f"[pipeline] completed elapsed_sec={elapsed_total:.2f}")
+        if elapsed_total >= 60:
+            mins = int(elapsed_total // 60)
+            secs = elapsed_total % 60
+            print(f"[pipeline] done  {mins}m {secs:.1f}s")
+        else:
+            print(f"[pipeline] done  {elapsed_total:.1f}s")
 
         return {
             "artifacts_root": str(artifacts_root),
@@ -288,7 +289,7 @@ class PipelineRunner:
                 trial_num += 1
                 arch = combo.get("training.architecture", "?")
                 loss = combo.get("training.loss", "?")
-                print(f"[ablation] Trial {trial_num}/{total_trials}: {arch}+{loss} seed={seed}")
+                print(f"\n[ablation] Trial {trial_num}/{total_trials}: {arch}+{loss} seed={seed}")
 
                 try:
                     trial_result = self._run_single(trial_cfg)
@@ -1146,7 +1147,19 @@ class PipelineRunner:
 
     def _run_command(self, cmd: list[str], print_commands: bool) -> None:
         if print_commands:
-            print(f"$ {shlex.join(cmd)}")
+            script_name = Path(cmd[1]).name if len(cmd) > 1 else "?"
+            params = {}
+            for flag in ("--architecture", "--loss", "--seed", "--epochs"):
+                try:
+                    idx = cmd.index(flag)
+                    params[flag.lstrip("-")] = cmd[idx + 1]
+                except (ValueError, IndexError):
+                    pass
+            if params:
+                summary = " ".join(f"{k}={v}" for k, v in params.items())
+                print(f"[train] {script_name}  {summary}")
+            else:
+                print(f"[train] {script_name}")
         subprocess.run(cmd, check=True, cwd=str(self.project_root))
 
     def _can_reuse(self, stage_dir: Path, outputs: dict[str, str], force: bool) -> bool:

@@ -1168,28 +1168,21 @@ def main() -> None:
         thresholds=thresholds,
         label_names=smell_labels,
     )
-    print("\nBest epoch:", best_epoch)
-    print("Thresholds:", {smell_labels[i]: float(thresholds[i]) for i in range(len(smell_labels))})
-    print(
-        "Threshold tuning strategy: per-label validation F1 grid search; "
-        "PR-AUC is threshold-independent."
-    )
-    print(
-        "Test (fixed 0.5) | "
-        f"f1_micro={float(test_metrics_fixed['f1_micro']):.4f} | "
-        f"f1_macro={float(test_metrics_fixed['f1_macro']):.4f} | "
-        f"pr_auc={float(test_metrics_fixed['pr_auc_macro']):.4f} | "
-        f"hamming={float(test_metrics_fixed['hamming_loss']):.4f} | "
-        f"subset_acc={float(test_metrics_fixed['subset_accuracy']):.4f}"
-    )
-    print(
-        "Test (tuned)    | "
-        f"f1_micro={float(test_metrics_tuned['f1_micro']):.4f} | "
-        f"f1_macro={float(test_metrics_tuned['f1_macro']):.4f} | "
-        f"pr_auc={float(test_metrics_tuned['pr_auc_macro']):.4f} | "
-        f"hamming={float(test_metrics_tuned['hamming_loss']):.4f} | "
-        f"subset_acc={float(test_metrics_tuned['subset_accuracy']):.4f}"
-    )
+    print(f"\nbest epoch: {best_epoch}\n")
+
+    print("thresholds (tuned):")
+    for i, label in enumerate(smell_labels):
+        short = label.removeprefix("is_")
+        print(f"  {short:<14} {float(thresholds[i]):.2f}")
+
+    print()
+    print(f"{'':>13} {'f1_micro':>9} {'f1_macro':>9} {'pr_auc':>7} {'hamming':>8} {'subset_acc':>11}")
+    for tag, m in [("fixed 0.5", test_metrics_fixed), ("tuned", test_metrics_tuned)]:
+        print(
+            f"{tag:<13} {float(m['f1_micro']):>9.4f} {float(m['f1_macro']):>9.4f} "
+            f"{float(m['pr_auc_macro']):>7.4f} {float(m['hamming_loss']):>8.4f} "
+            f"{float(m['subset_accuracy']):>11.4f}"
+        )
 
     # Curve data for publication plots
     test_probs_np = torch.sigmoid(test_logits).numpy()
@@ -1271,7 +1264,6 @@ def main() -> None:
     }
 
     (run_dir / "metrics.json").write_text(json.dumps(artifacts, indent=2))
-    print(f"Saved artifacts to {run_dir}")
 
 
 if __name__ == "__main__":
