@@ -315,6 +315,10 @@ class PipelineRunner:
                         "hamming_loss_fixed": float(metrics.get("test_fixed_0_5", {}).get("hamming_loss", 0.0)),
                         "subset_acc_fixed": float(metrics.get("test_fixed_0_5", {}).get("subset_accuracy", 0.0)),
                         "per_label_tuned": metrics.get("test_tuned", {}).get("per_label", {}),
+                        # new extended metrics
+                        "balanced_acc_tuned": float(metrics.get("test_tuned", {}).get("balanced_acc_macro", 0.0)),
+                        "mcc_tuned": float(metrics.get("test_tuned", {}).get("mcc_macro", 0.0)),
+                        "roc_auc_tuned": float(metrics.get("test_tuned", {}).get("roc_auc_macro", 0.0)),
                         # profiling
                         "train_duration_sec": float(metrics.get("profiling", {}).get("train_duration_sec", 0.0)),
                         "peak_gpu_memory_mb": float(metrics.get("profiling", {}).get("peak_gpu_memory_mb", 0.0)),
@@ -403,6 +407,9 @@ class PipelineRunner:
             train_dur_vals = [row["train_duration_sec"] for row in items]
             gpu_mem_vals = [row["peak_gpu_memory_mb"] for row in items]
             throughput_vals = [row["train_throughput"] for row in items]
+            ba_vals = [row["balanced_acc_tuned"] for row in items]
+            mcc_vals = [row["mcc_tuned"] for row in items]
+            roc_auc_vals = [row["roc_auc_tuned"] for row in items]
 
             summary_extended_rows.append(
                 {
@@ -426,6 +433,13 @@ class PipelineRunner:
                     "subset_acc_tuned_std": statistics.pstdev(subset_tuned_vals),
                     "pr_auc_fixed_mean": statistics.mean(pr_fixed_vals),
                     "pr_auc_fixed_std": statistics.pstdev(pr_fixed_vals),
+                    # extended metrics means
+                    "balanced_acc_tuned_mean": statistics.mean(ba_vals),
+                    "balanced_acc_tuned_std": statistics.pstdev(ba_vals),
+                    "mcc_tuned_mean": statistics.mean(mcc_vals),
+                    "mcc_tuned_std": statistics.pstdev(mcc_vals),
+                    "roc_auc_tuned_mean": statistics.mean(roc_auc_vals),
+                    "roc_auc_tuned_std": statistics.pstdev(roc_auc_vals),
                     # per-label means
                     "per_label_means": per_label_means,
                     # profiling means
