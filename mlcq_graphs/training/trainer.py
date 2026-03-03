@@ -303,6 +303,15 @@ class Trainer:
                 f"val_pr_auc={entry['val_pr_auc_macro']:.4f}"
             )
 
+            if epoch % 10 == 0 or epoch == 1:
+                f1_per_label = val_metrics.get("f1_per_label", [])
+                if f1_per_label:
+                    parts = [f"{v:.3f}" for v in f1_per_label]
+                    print(f"  per-label f1: {' | '.join(parts)}")
+
+            if entry["val_f1_macro"] < 0.05 and epoch > 5:
+                print(f"  [warn] val_f1_macro={entry['val_f1_macro']:.4f} very low -- possible label collapse")
+
             val_metric = float(val_metrics[metric_key])
             improved = (val_metric - best_metric) > self.min_delta
 
