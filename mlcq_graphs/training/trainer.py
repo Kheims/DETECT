@@ -195,6 +195,7 @@ class Trainer:
         grad_clip_norm: float = 1.0,
         architecture: str = "gcn",
         loss_name: str = "weighted_bce",
+        wandb_run: Any | None = None,
     ) -> None:
         if early_stopping_metric not in METRIC_KEY_MAP:
             raise ValueError(
@@ -216,6 +217,7 @@ class Trainer:
         self.grad_clip_norm = grad_clip_norm
         self.architecture = architecture
         self.loss_name = loss_name
+        self.wandb_run = wandb_run
 
     # ------------------------------------------------------------------
     # Public API
@@ -295,6 +297,21 @@ class Trainer:
                 "val_pr_auc_macro": float(val_metrics["pr_auc_macro"]),
             }
             history.append(entry)
+
+            if self.wandb_run is not None:
+                wandb_payload: dict[str, float] = {
+                    "epoch": epoch,
+                    "train/loss": avg_loss,
+                    "val/f1_micro": entry["val_f1_micro"],
+                    "val/f1_macro": entry["val_f1_macro"],
+                    "val/pr_auc_macro": entry["val_pr_auc_macro"],
+                }
+                f1_per_label = val_metrics.get("f1_per_label", [])
+                label_names = ["feature_envy", "long_method", "blob", "data_class"]
+                for i, name in enumerate(label_names):
+                    if i < len(f1_per_label):
+                        wandb_payload[f"val/f1_{name}"] = float(f1_per_label[i])
+                self.wandb_run.log(wandb_payload, step=epoch)
 
             print(
                 f"Epoch {epoch:03d} | loss={avg_loss:.4f} | "

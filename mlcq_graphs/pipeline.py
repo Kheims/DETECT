@@ -204,8 +204,32 @@ class PipelineRunner:
             )
             stages["token_encoder"] = token_state
 
+        # Init W&B before training so the Trainer logs epochs live.
+        # Skip if ablation already injected a run via _wandb_run.
+        wandb_run = config.get("_wandb_run")
+        wandb_enabled = bool(run_cfg.get("wandb", {}).get("enabled", False))
+        training_enabled = bool(config.get("training", {}).get("enabled", True))
+        if wandb_enabled and wandb_run is None and training_enabled:
+            try:
+                import wandb
+
+                wandb_cfg = run_cfg.get("wandb", {})
+                wandb_run = wandb.init(
+                    project=str(wandb_cfg.get("project", "mlcq_graphs")),
+                    entity=wandb_cfg.get("entity"),
+                    name=str(run_cfg.get("name", "run")),
+                    config=jsonable(config),
+                    mode="online",
+                    tags=wandb_cfg.get("tags", []),
+                )
+                config["_wandb_run"] = wandb_run
+            except ImportError:
+                print("[pipeline] wandb not installed; skipping live logging")
+            except Exception as exc:
+                print(f"[pipeline] W&B init failed: {exc!r}")
+
         training_state = None
-        if bool(config.get("training", {}).get("enabled", True)):
+        if training_enabled:
             if dataset_state is None:
                 raise ValueError("Training stage requires dataset stage output")
             if construction_state is None:
@@ -231,7 +255,18 @@ class PipelineRunner:
             )
             stages["reporting"] = report_state
 
-        if bool(run_cfg.get("wandb", {}).get("enabled", False)) and training_state is not None:
+        # Log test metrics/figures to live W&B run, then finish it
+        if wandb_run is not None and training_state is not None:
+            self._log_wandb(
+                config=config,
+                training_state=training_state,
+                report_state=report_state,
+                wandb_run=wandb_run,
+            )
+            wandb_run.finish()
+            config.pop("_wandb_run", None)
+        elif wandb_enabled and training_state is not None:
+            # Fallback: no live run (import failed etc.), log post-hoc
             self._log_wandb(config=config, training_state=training_state, report_state=report_state)
 
         elapsed_total = time.perf_counter() - pipeline_started
@@ -287,9 +322,37 @@ class PipelineRunner:
                 )
 
                 trial_num += 1
-                arch = combo.get("training.architecture", "?")
-                loss = combo.get("training.loss", "?")
-                print(f"\n[ablation] Trial {trial_num}/{total_trials}: {arch}+{loss} seed={seed}")
+                combo_display = " ".join(f"{k.split('.')[-1]}={v}" for k, v in sorted(combo.items()))
+                print(f"\n[ablation] Trial {trial_num}/{total_trials}: {combo_display} seed={seed}")
+
+                # Init W&B run BEFORE training so per-epoch metrics stream live
+                wandb_run = None
+                wandb_enabled = bool(run_cfg.get("wandb", {}).get("enabled", False))
+                group_name = "_".join(f"{k.split('.')[-1]}={v}" for k, v in sorted(combo.items()))
+                if wandb_enabled:
+                    try:
+                        import wandb  # type: ignore[import-not-found]
+                        wandb_cfg = run_cfg.get("wandb", {})
+                        combo_tags = [f"{k.split('.')[-1]}={v}" for k, v in sorted(combo.items())]
+                        trial_tags = combo_tags + [f"seed={seed}", "ablation"] + list(wandb_cfg.get("tags", []))
+                        wandb_run = wandb.init(
+                            project=str(wandb_cfg.get("project", "mlcq_graphs")),
+                            entity=wandb_cfg.get("entity"),
+                            name=f"{base_name}_c{combo_idx:03d}_s{seed}",
+                            config=jsonable(trial_cfg),
+                            mode="online",
+                            tags=trial_tags,
+                            group=group_name,
+                            reinit=True,
+                        )
+                    except ImportError:
+                        print("[ablation] wandb not installed; skipping live logging")
+                    except Exception as wandb_exc:
+                        print(f"[ablation] W&B init failed: {wandb_exc!r}")
+
+                # Pass wandb_run into pipeline so Trainer gets it
+                if wandb_run is not None:
+                    trial_cfg["_wandb_run"] = wandb_run
 
                 try:
                     trial_result = self._run_single(trial_cfg)
@@ -310,28 +373,23 @@ class PipelineRunner:
                         "f1_micro_tuned": float(metrics.get("test_tuned", {}).get("f1_micro", 0.0)),
                         "f1_macro_tuned": float(metrics.get("test_tuned", {}).get("f1_macro", 0.0)),
                         "pr_auc_tuned": float(metrics.get("test_tuned", {}).get("pr_auc_macro", 0.0)),
-                        # extended fields from Plan 01's enriched metrics.json
                         "hamming_loss_tuned": float(metrics.get("test_tuned", {}).get("hamming_loss", 0.0)),
                         "subset_acc_tuned": float(metrics.get("test_tuned", {}).get("subset_accuracy", 0.0)),
                         "pr_auc_fixed": float(metrics.get("test_fixed_0_5", {}).get("pr_auc_macro", 0.0)),
                         "hamming_loss_fixed": float(metrics.get("test_fixed_0_5", {}).get("hamming_loss", 0.0)),
                         "subset_acc_fixed": float(metrics.get("test_fixed_0_5", {}).get("subset_accuracy", 0.0)),
                         "per_label_tuned": metrics.get("test_tuned", {}).get("per_label", {}),
-                        # new extended metrics
                         "balanced_acc_tuned": float(metrics.get("test_tuned", {}).get("balanced_acc_macro", 0.0)),
                         "mcc_tuned": float(metrics.get("test_tuned", {}).get("mcc_macro", 0.0)),
                         "roc_auc_tuned": float(metrics.get("test_tuned", {}).get("roc_auc_macro", 0.0)),
-                        # profiling
                         "train_duration_sec": float(metrics.get("profiling", {}).get("train_duration_sec", 0.0)),
                         "peak_gpu_memory_mb": float(metrics.get("profiling", {}).get("peak_gpu_memory_mb", 0.0)),
                         "train_throughput": float(metrics.get("profiling", {}).get("train_throughput_graphs_per_sec", 0.0)),
                     }
                     records.append(record)
 
-                    if bool(run_cfg.get("wandb", {}).get("enabled", False)):
-                        trial_wandb_cfg = copy.deepcopy(trial_cfg)
-                        trial_tags = [str(arch), str(loss), f"seed={seed}", "ablation"]
-                        trial_wandb_cfg.setdefault("run", {}).setdefault("wandb", {})["tags"] = trial_tags
+                    # Log test metrics to W&B (per-epoch was already logged live via Trainer)
+                    if wandb_run is not None:
                         training_state = StageState(
                             name="training",
                             fingerprint=stage_info["fingerprint"],
@@ -340,13 +398,27 @@ class PipelineRunner:
                             outputs=stage_info["outputs"],
                         )
                         try:
-                            self._log_wandb(config=trial_wandb_cfg, training_state=training_state, report_state=None)
+                            self._log_wandb(
+                                config=trial_cfg,
+                                training_state=training_state,
+                                report_state=None,
+                                group=group_name,
+                                wandb_run=wandb_run,
+                            )
                         except Exception as wandb_exc:
                             print(f"[ablation] W&B logging failed for trial {trial_num}: {wandb_exc!r}")
 
                 except Exception as exc:
                     print(f"[ablation] trial FAILED: {exc!r} -- continuing")
                     failed_records.append({"seed": int(seed), "combo": combo, "error": str(exc)})
+                finally:
+                    trial_cfg.pop("_wandb_run", None)
+                    if wandb_run is not None:
+                        try:
+                            wandb_run.finish()
+                        except Exception:
+                            pass
+                        wandb_run = None
 
         if not records:
             raise RuntimeError("all ablation trials failed; no results to aggregate")
@@ -451,19 +523,33 @@ class PipelineRunner:
                 }
             )
 
-        # significance tests vs GCN+weighted_bce baseline
+        # significance tests vs configurable baseline
         combo_scores: dict[str, list[float]] = {
             key: [row["f1_macro_tuned"] for row in items]
             for key, items in grouped.items()
         }
+        baseline_cfg = ablation_cfg.get("baseline", {})
         baseline_key: str | None = None
         for key in grouped:
             combo_dict = json.loads(key)
-            arch_val = combo_dict.get("training.architecture", combo_dict.get("architecture", ""))
-            loss_val = combo_dict.get("training.loss", combo_dict.get("loss", ""))
-            if str(arch_val).lower() == "gcn" and str(loss_val).lower() == "weighted_bce":
-                baseline_key = key
-                break
+            if baseline_cfg:
+                # Match: combo is a superset of baseline config (all baseline keys match)
+                match = all(
+                    str(combo_dict.get(bk, "")) == str(bv)
+                    if not isinstance(bv, list)
+                    else combo_dict.get(bk) == bv
+                    for bk, bv in baseline_cfg.items()
+                )
+                if match:
+                    baseline_key = key
+                    break
+            else:
+                # Legacy fallback: gcn+weighted_bce
+                arch_val = combo_dict.get("training.architecture", combo_dict.get("architecture", ""))
+                loss_val = combo_dict.get("training.loss", combo_dict.get("loss", ""))
+                if str(arch_val).lower() == "gcn" and str(loss_val).lower() == "weighted_bce":
+                    baseline_key = key
+                    break
 
         significance_results: dict[str, Any] = {}
         if baseline_key is not None:
@@ -478,7 +564,7 @@ class PipelineRunner:
             significance_results["pairwise_tests"] = run_pairwise_tests(
                 combo_scores, "f1_macro_tuned"
             )
-            significance_results["note"] = "no gcn+weighted_bce baseline found; baseline_tests skipped"
+            significance_results["note"] = "no baseline combo found; baseline_tests skipped"
 
         records_path = report_dir / "records.json"
         summary_path = report_dir / "summary.json"
@@ -531,21 +617,25 @@ class PipelineRunner:
         figure_path = report_dir / "ablation_f1_macro_tuned.png"
         generate_ablation_figure(summary_rows=summary_rows, output_path=figure_path, metric="f1_macro_tuned")
 
-        # Console summary table
-        print(f"\n{'='*60}")
+        # Console summary table — auto-detect columns from grid keys
+        col_keys = grid_keys
+        col_names = [k.split(".")[-1] for k in col_keys]
+        col_widths = [max(len(name), 10) for name in col_names]
+
+        header_sep_width = sum(col_widths) + len(col_widths) + 20 + 16
+        print(f"\n{'=' * header_sep_width}")
         print(f" Ablation Summary (macro-F1 tuned) | {len(records)} trials")
         if failed_records:
             print(f" ({len(failed_records)} trial(s) failed)")
-        print(f"{'='*60}")
-        print(f"{'Arch':<12} {'Loss':<14} {'Mean':>7} {'Std':>7}  {'vs baseline'}")
-        print(f"{'-'*60}")
+        print(f"{'=' * header_sep_width}")
+        header_parts = [f"{name:<{w}}" for name, w in zip(col_names, col_widths)]
+        print(f"{' '.join(header_parts)} {'Mean':>7} {'Std':>7}  {'vs baseline'}")
+        print(f"{'-' * header_sep_width}")
 
         baseline_tests = significance_results.get("baseline_tests", {})
 
         for row in summary_extended_rows:
             combo = row["combo"]
-            r_arch = str(combo.get("training.architecture", combo.get("architecture", "?")))
-            r_loss = str(combo.get("training.loss", combo.get("loss", "?")))
             mean_f1 = row["f1_macro_tuned_mean"]
             std_f1 = row["f1_macro_tuned_std"]
 
@@ -561,7 +651,11 @@ class PipelineRunner:
             else:
                 marker = f"p={p_val:.3f}"
 
-            print(f"{r_arch:<12} {r_loss:<14} {mean_f1:>7.4f} {std_f1:>7.4f}  {marker}")
+            val_parts = []
+            for gk, w in zip(col_keys, col_widths):
+                val = combo.get(gk, "?")
+                val_parts.append(f"{str(val):<{w}}")
+            print(f"{' '.join(val_parts)} {mean_f1:>7.4f} {std_f1:>7.4f}  {marker}")
 
         note_seeds = len(seeds)
         if note_seeds <= 5:
@@ -918,7 +1012,6 @@ class PipelineRunner:
             )
 
         run_dir.mkdir(parents=True, exist_ok=True)
-        script_path = self.project_root / "scripts" / "train_gcn_baseline.py"
         split_seed = int(stage_cfg.get("seed", 42))
         split_path = (
             artifacts_root
@@ -929,47 +1022,6 @@ class PipelineRunner:
         )
         split_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cmd = [
-            sys.executable,
-            str(script_path),
-            "--dataset-path",
-            dataset_state.outputs["dataset_path"],
-            "--output-dir",
-            str(runs_root),
-            "--run-name",
-            fingerprint,
-            "--split-path",
-            str(split_path),
-            "--save-split",
-            "--reuse-split",
-            "--num-labels",
-            str(stage_cfg.get("num_labels", 4)),
-            "--train-ratio",
-            str(stage_cfg.get("train_ratio", 0.8)),
-            "--val-ratio",
-            str(stage_cfg.get("val_ratio", 0.1)),
-            "--seed",
-            str(split_seed),
-            "--epochs",
-            str(stage_cfg.get("epochs", 40)),
-            "--patience",
-            str(stage_cfg.get("patience", 10)),
-            "--lr",
-            str(stage_cfg.get("lr", 1e-3)),
-            "--weight-decay",
-            str(stage_cfg.get("weight_decay", 1e-4)),
-            "--dropout",
-            str(stage_cfg.get("dropout", 0.2)),
-            "--hidden-dim",
-            str(stage_cfg.get("hidden_dim", 256)),
-            "--type-emb-dim",
-            str(stage_cfg.get("type_emb_dim", 128)),
-            "--grad-accum-steps",
-            str(stage_cfg.get("grad_accum_steps", 1)),
-            "--grad-clip-norm",
-            str(stage_cfg.get("grad_clip_norm", 1.0)),
-        ]
-
         # Architecture-aware batch budget
         architecture = str(stage_cfg.get("architecture", "gcn"))
         if architecture == "gat":
@@ -977,66 +1029,64 @@ class PipelineRunner:
         else:
             max_nodes = int(stage_cfg.get("max_nodes_per_batch", 20000))
 
-        cmd += [
-            "--max-nodes-per-batch",
-            str(max_nodes),
-            "--max-edges-per-batch",
-            str(stage_cfg.get("max_edges_per_batch", 0)),
-            "--eval-max-nodes-per-batch",
-            str(stage_cfg.get("eval_max_nodes_per_batch", 40000)),
-            "--eval-max-edges-per-batch",
-            str(stage_cfg.get("eval_max_edges_per_batch", 0)),
-            "--num-workers",
-            str(stage_cfg.get("num_workers", 0)),
-            "--threshold-steps",
-            str(stage_cfg.get("threshold_steps", 101)),
-            "--device",
-            str(stage_cfg.get("device", "auto")),
-            "--feature-mode",
-            str(stage_cfg.get("feature_mode", "type_numeric")),
-            "--architecture",
-            str(stage_cfg.get("architecture", "gcn")),
-            "--num-layers",
-            str(stage_cfg.get("num_layers", 2)),
-            "--num-heads",
-            str(stage_cfg.get("gat_num_heads", 4)),
-            "--aggregation",
-            str(stage_cfg.get("graphsage_aggregation", "mean")),
-            "--loss",
-            str(stage_cfg.get("loss", "weighted_bce")),
-            "--early-stopping-metric",
-            str(stage_cfg.get("early_stopping_metric", "macro_f1")),
-            "--early-stopping-min-delta",
-            str(stage_cfg.get("early_stopping_min_delta", 0.0)),
-        ]
-
         focal_cfg = stage_cfg.get("focal_loss", {})
-        if isinstance(focal_cfg, dict):
-            cmd += [
-                "--focal-gamma",
-                str(focal_cfg.get("gamma", 2.0)),
-                "--focal-alpha",
-                str(focal_cfg.get("alpha", -1.0)),
-            ]
+        if not isinstance(focal_cfg, dict):
+            focal_cfg = {}
 
-        if stage_cfg.get("max_graphs") is not None:
-            cmd += ["--max-graphs", str(stage_cfg.get("max_graphs"))]
-        if bool(stage_cfg.get("pin_memory", False)):
-            cmd.append("--pin-memory")
-        if bool(stage_cfg.get("to_undirected", True)):
-            cmd.append("--to-undirected")
-        else:
-            cmd.append("--no-to-undirected")
+        # Build config dict for run_training()
+        from scripts.train_gcn_baseline import run_training
+
+        train_cfg: dict[str, Any] = {
+            "dataset_path": dataset_state.outputs["dataset_path"],
+            "output_dir": str(runs_root),
+            "run_name": fingerprint,
+            "split_path": str(split_path),
+            "save_split": True,
+            "reuse_split": True,
+            "num_labels": int(stage_cfg.get("num_labels", 4)),
+            "train_ratio": float(stage_cfg.get("train_ratio", 0.8)),
+            "val_ratio": float(stage_cfg.get("val_ratio", 0.1)),
+            "seed": split_seed,
+            "epochs": int(stage_cfg.get("epochs", 40)),
+            "patience": int(stage_cfg.get("patience", 10)),
+            "lr": float(stage_cfg.get("lr", 1e-3)),
+            "weight_decay": float(stage_cfg.get("weight_decay", 1e-4)),
+            "dropout": float(stage_cfg.get("dropout", 0.2)),
+            "hidden_dim": int(stage_cfg.get("hidden_dim", 256)),
+            "type_emb_dim": int(stage_cfg.get("type_emb_dim", 128)),
+            "grad_accum_steps": int(stage_cfg.get("grad_accum_steps", 1)),
+            "grad_clip_norm": float(stage_cfg.get("grad_clip_norm", 1.0)),
+            "max_nodes_per_batch": max_nodes,
+            "max_edges_per_batch": int(stage_cfg.get("max_edges_per_batch", 0)),
+            "eval_max_nodes_per_batch": int(stage_cfg.get("eval_max_nodes_per_batch", 40000)),
+            "eval_max_edges_per_batch": int(stage_cfg.get("eval_max_edges_per_batch", 0)),
+            "num_workers": int(stage_cfg.get("num_workers", 0)),
+            "pin_memory": bool(stage_cfg.get("pin_memory", False)),
+            "to_undirected": bool(stage_cfg.get("to_undirected", True)),
+            "threshold_steps": int(stage_cfg.get("threshold_steps", 101)),
+            "device": str(stage_cfg.get("device", "auto")),
+            "feature_mode": str(stage_cfg.get("feature_mode", "type_numeric")),
+            "architecture": architecture,
+            "num_layers": int(stage_cfg.get("num_layers", 2)),
+            "num_heads": int(stage_cfg.get("gat_num_heads", 4)),
+            "aggregation": str(stage_cfg.get("graphsage_aggregation", "mean")),
+            "loss": str(stage_cfg.get("loss", "weighted_bce")),
+            "focal_gamma": float(focal_cfg.get("gamma", 2.0)),
+            "focal_alpha": float(focal_cfg.get("alpha", -1.0)),
+            "early_stopping_metric": str(stage_cfg.get("early_stopping_metric", "macro_f1")),
+            "early_stopping_min_delta": float(stage_cfg.get("early_stopping_min_delta", 0.0)),
+            "max_graphs": stage_cfg.get("max_graphs"),
+        }
 
         if token_state is not None:
-            cmd += [
-                "--token-vectors-path",
-                token_state.outputs["vectors_path"],
-                "--manifest-path",
-                construction_state.outputs["manifest_path"],
-            ]
+            train_cfg["token_vectors_path"] = token_state.outputs["vectors_path"]
+            train_cfg["manifest_path"] = construction_state.outputs["manifest_path"]
 
-        self._run_command(cmd, print_commands=bool(run_cfg.get("print_commands", True)))
+        wandb_run = config.get("_wandb_run")
+        if bool(run_cfg.get("print_commands", True)):
+            print(f"[train] in-process  architecture={architecture} loss={train_cfg['loss']} seed={split_seed}")
+
+        run_training(train_cfg, wandb_run=wandb_run)
         self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
 
         return StageState(
@@ -1097,6 +1147,8 @@ class PipelineRunner:
         config: dict[str, Any],
         training_state: StageState,
         report_state: StageState | None,
+        group: str | None = None,
+        wandb_run: Any | None = None,
     ) -> None:
         try:
             import wandb  # type: ignore[import-not-found]
@@ -1107,31 +1159,78 @@ class PipelineRunner:
         run_cfg = config.get("run", {})
         wandb_cfg = run_cfg.get("wandb", {})
 
-        run = wandb.init(
-            project=str(wandb_cfg.get("project", "mlcq_graphs")),
-            entity=wandb_cfg.get("entity"),
-            name=str(run_cfg.get("name", training_state.fingerprint[:12])),
-            config=jsonable(config),
-            mode="online",
-            tags=wandb_cfg.get("tags", []),
-        )
+        # Use an existing run (from in-process training) or create a new one
+        run = wandb_run
+        created_run = False
+        if run is None:
+            run = wandb.init(
+                project=str(wandb_cfg.get("project", "mlcq_graphs")),
+                entity=wandb_cfg.get("entity"),
+                name=str(run_cfg.get("name", training_state.fingerprint[:12])),
+                config=jsonable(config),
+                mode="online",
+                tags=wandb_cfg.get("tags", []),
+                group=group,
+            )
+            created_run = True
 
         metrics = json.loads(Path(training_state.outputs["metrics_path"]).read_text())
         test_fixed = metrics.get("test_fixed_0_5", {})
         test_tuned = metrics.get("test_tuned", {})
 
-        wandb.log(
-            {
-                "test/f1_micro_fixed": float(test_fixed.get("f1_micro", 0.0)),
-                "test/f1_macro_fixed": float(test_fixed.get("f1_macro", 0.0)),
-                "test/f1_micro_tuned": float(test_tuned.get("f1_micro", 0.0)),
-                "test/f1_macro_tuned": float(test_tuned.get("f1_macro", 0.0)),
-                "test/pr_auc_tuned": float(test_tuned.get("pr_auc_macro", 0.0)),
-                "test/balanced_acc_tuned": float(test_tuned.get("balanced_acc_macro", 0.0)),
-                "test/mcc_tuned": float(test_tuned.get("mcc_macro", 0.0)),
-                "test/roc_auc_tuned": float(test_tuned.get("roc_auc_macro", 0.0)),
-            }
-        )
+        # Log per-epoch history as backup (in-process logging is primary)
+        history = metrics.get("history", [])
+        if history and created_run:
+            for entry in history:
+                epoch = int(entry.get("epoch", 0))
+                run.log(
+                    {
+                        "epoch": epoch,
+                        "train/loss": float(entry.get("train_loss", 0.0)),
+                        "val/f1_micro": float(entry.get("val_f1_micro", 0.0)),
+                        "val/f1_macro": float(entry.get("val_f1_macro", 0.0)),
+                        "val/pr_auc_macro": float(entry.get("val_pr_auc_macro", 0.0)),
+                    },
+                    step=epoch,
+                )
+
+        # Test metrics — aggregate (both fixed and tuned thresholds)
+        test_summary: dict[str, float | int] = {}
+        for suffix, src in [("fixed", test_fixed), ("tuned", test_tuned)]:
+            for key in ("f1_micro", "f1_macro", "pr_auc_macro", "balanced_acc_macro",
+                        "mcc_macro", "roc_auc_macro", "hamming_loss", "subset_accuracy"):
+                val = src.get(key)
+                if val is not None:
+                    test_summary[f"test/{key}_{suffix}"] = float(val)
+
+        # Per-label test metrics (tuned thresholds)
+        per_label = test_tuned.get("per_label", {})
+        for label, label_metrics in per_label.items():
+            if isinstance(label_metrics, dict):
+                for metric_name in ("f1", "precision", "recall", "pr_auc",
+                                    "balanced_acc", "mcc", "roc_auc",
+                                    "tp", "fp", "tn", "fn"):
+                    val = label_metrics.get(metric_name)
+                    if val is not None:
+                        test_summary[f"test_per_label/{label}/{metric_name}"] = float(val)
+
+        # Training metadata
+        best_epoch = metrics.get("best_epoch")
+        if best_epoch is not None:
+            test_summary["train/best_epoch"] = int(best_epoch)
+
+        thresholds = metrics.get("thresholds", {})
+        for label, thr in thresholds.items():
+            test_summary[f"thresholds/{label}"] = float(thr)
+
+        # Profiling
+        profiling = metrics.get("profiling", {})
+        if profiling:
+            test_summary["profiling/train_duration_sec"] = float(profiling.get("train_duration_sec", 0.0))
+            test_summary["profiling/peak_gpu_memory_mb"] = float(profiling.get("peak_gpu_memory_mb", 0.0))
+            test_summary["profiling/train_throughput"] = float(profiling.get("train_throughput_graphs_per_sec", 0.0))
+
+        run.summary.update(test_summary)
 
         if report_state is not None:
             for key, value in report_state.outputs.items():
@@ -1141,9 +1240,10 @@ class PipelineRunner:
                     continue
                 fig_path = Path(value)
                 if fig_path.suffix.lower() in {".png", ".jpg", ".jpeg"} and fig_path.exists():
-                    wandb.log({f"figures/{key}": wandb.Image(str(fig_path))})
+                    run.log({f"figures/{key}": wandb.Image(str(fig_path))})
 
-        run.finish()
+        if created_run:
+            run.finish()
 
     def _run_command(self, cmd: list[str], print_commands: bool) -> None:
         if print_commands:

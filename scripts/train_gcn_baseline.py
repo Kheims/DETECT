@@ -909,55 +909,87 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    set_seed(args.seed)
+def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str, Any]:
+    """Run a complete training trial from a config dict.
 
-    device = select_device(args.device)
-    edge_budget = args.max_edges_per_batch if args.max_edges_per_batch > 0 else None
-    eval_edge_budget = (
-        args.eval_max_edges_per_batch if args.eval_max_edges_per_batch > 0 else None
-    )
+    This is the core training function used by both the CLI and the pipeline.
+    It handles dataset loading, splitting, model creation, training, evaluation,
+    threshold tuning, curve generation and metrics writing.
+
+    Args:
+        cfg: Flat config dict with keys matching argparse defaults (e.g.
+            'dataset_path', 'seed', 'epochs', 'architecture', etc.). The
+            pipeline constructs this from YAML; the CLI builds it from argparse.
+        wandb_run: Optional W&B run object for live per-epoch logging. When
+            provided, epoch metrics are streamed to W&B during training.
+
+    Returns:
+        The metrics dict that is also written to metrics.json.
+    """
+    seed = int(cfg.get("seed", 42))
+    set_seed(seed)
+
+    device = select_device(str(cfg.get("device", "auto")))
+    max_edges = int(cfg.get("max_edges_per_batch", 0))
+    eval_max_edges = int(cfg.get("eval_max_edges_per_batch", 0))
+    edge_budget = max_edges if max_edges > 0 else None
+    eval_edge_budget = eval_max_edges if eval_max_edges > 0 else None
+
+    dataset_path = Path(str(cfg.get("dataset_path", "artifacts/cache/dataset/latest/dataset.pt")))
+    num_labels = int(cfg.get("num_labels", 4))
+    max_graphs = cfg.get("max_graphs")
+    if max_graphs is not None:
+        max_graphs = int(max_graphs)
+    to_undirected_edges = bool(cfg.get("to_undirected", True))
 
     dataset = load_dataset(
-        dataset_path=args.dataset_path,
-        num_labels=args.num_labels,
-        max_graphs=args.max_graphs,
-        to_undirected_edges=args.to_undirected,
+        dataset_path=dataset_path,
+        num_labels=num_labels,
+        max_graphs=max_graphs,
+        to_undirected_edges=to_undirected_edges,
     )
 
-    use_token_features = args.token_vectors_path is not None
+    token_vectors_path = cfg.get("token_vectors_path")
+    manifest_path = cfg.get("manifest_path")
+    use_token_features = token_vectors_path is not None
     token_feature_dim = 0
     token_feature_stats: dict[str, int | float] | None = None
     if use_token_features:
-        if args.manifest_path is None:
+        if manifest_path is None:
             raise ValueError(
-                "--manifest-path is required when --token-vectors-path is provided."
+                "manifest_path is required when token_vectors_path is provided."
             )
         token_feature_dim, token_feature_stats = attach_token_vectors(
             dataset=dataset,
-            manifest_path=args.manifest_path,
-            vectors_path=args.token_vectors_path,
-            progress_every=args.token_progress_every,
+            manifest_path=Path(str(manifest_path)),
+            vectors_path=Path(str(token_vectors_path)),
+            progress_every=int(cfg.get("token_progress_every", 200)),
         )
 
+    train_ratio = float(cfg.get("train_ratio", 0.8))
+    val_ratio = float(cfg.get("val_ratio", 0.1))
+    split_path_raw = cfg.get("split_path")
+    split_path = Path(str(split_path_raw)) if split_path_raw is not None else None
+    reuse_split = bool(cfg.get("reuse_split", True))
+    save_split = bool(cfg.get("save_split", True))
+
     split_indices: dict[str, list[int]]
-    if args.split_path is not None and args.reuse_split and args.split_path.exists():
-        split_indices = load_split_indices(args.split_path)
+    if split_path is not None and reuse_split and split_path.exists():
+        split_indices = load_split_indices(split_path)
         train_ds, val_ds, test_ds = apply_split_indices(dataset, split_indices)
     else:
         train_ds, val_ds, test_ds, split_indices = split_sample_level(
             dataset=dataset,
-            train_ratio=args.train_ratio,
-            val_ratio=args.val_ratio,
-            seed=args.seed,
-            num_labels=args.num_labels,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            seed=seed,
+            num_labels=num_labels,
         )
-        if args.split_path is not None and args.save_split:
+        if split_path is not None and save_split:
             save_split_indices(
-                split_path=args.split_path,
+                split_path=split_path,
                 split_indices=split_indices,
-                seed=args.seed,
+                seed=seed,
                 dataset_size=len(dataset),
             )
 
@@ -968,8 +1000,9 @@ def main() -> None:
     val_summary = summarize_dataset(val_ds, SMELL_LABELS)
     test_summary = summarize_dataset(test_ds, SMELL_LABELS)
 
-    use_type_features = args.feature_mode in {"type_numeric", "type_only"}
-    use_numeric_features = args.feature_mode in {"type_numeric", "numeric_only"}
+    feature_mode = str(cfg.get("feature_mode", "type_numeric"))
+    use_type_features = feature_mode in {"type_numeric", "type_only"}
+    use_numeric_features = feature_mode in {"type_numeric", "numeric_only"}
 
     if not use_type_features and not use_numeric_features and not use_token_features:
         raise ValueError("Invalid feature_mode: both feature sources disabled.")
@@ -977,63 +1010,84 @@ def main() -> None:
     num_node_types = max(int(d.type_id.max().item()) for d in dataset) + 1
     num_numeric_feats = int(train_ds[0].x.size(-1)) if use_numeric_features else 0
 
-    # Architecture-specific kwargs
+    architecture = str(cfg.get("architecture", "gcn"))
+    num_layers = int(cfg.get("num_layers", 2))
+    hidden_dim = int(cfg.get("hidden_dim", 256))
+    type_emb_dim = int(cfg.get("type_emb_dim", 128))
+    dropout = float(cfg.get("dropout", 0.2))
+    num_heads = int(cfg.get("num_heads", 4))
+    aggregation = str(cfg.get("aggregation", "mean"))
+    loss_name = str(cfg.get("loss", "weighted_bce"))
+
     arch_kwargs: dict[str, Any] = {}
-    if args.architecture == "gat":
-        arch_kwargs["num_heads"] = args.num_heads
-    elif args.architecture == "graphsage":
-        arch_kwargs["aggregation"] = args.aggregation
+    if architecture == "gat":
+        arch_kwargs["num_heads"] = num_heads
+    elif architecture == "graphsage":
+        arch_kwargs["aggregation"] = aggregation
 
     model = get_model(
-        args.architecture,
+        architecture,
         num_node_types=num_node_types,
-        type_emb_dim=args.type_emb_dim,
+        type_emb_dim=type_emb_dim,
         num_numeric_feats=num_numeric_feats,
         num_token_feats=token_feature_dim,
-        hidden_dim=args.hidden_dim,
-        num_labels=args.num_labels,
-        dropout=args.dropout,
-        num_layers=args.num_layers,
+        hidden_dim=hidden_dim,
+        num_labels=num_labels,
+        dropout=dropout,
+        num_layers=num_layers,
         use_type_features=use_type_features,
         use_numeric_features=use_numeric_features,
         use_token_features=use_token_features,
         **arch_kwargs,
     ).to(device)
 
+    lr = float(cfg.get("lr", 0.0005))
+    weight_decay = float(cfg.get("weight_decay", 5e-5))
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
+        lr=lr,
+        weight_decay=weight_decay,
     )
 
+    focal_gamma = float(cfg.get("focal_gamma", 2.0))
+    focal_alpha = float(cfg.get("focal_alpha", -1.0))
     loss_fn = build_loss_fn(
-        loss_name=args.loss,
+        loss_name=loss_name,
         train_ds=train_ds,
-        num_labels=args.num_labels,
+        num_labels=num_labels,
         device=device,
-        focal_gamma=args.focal_gamma,
-        focal_alpha=args.focal_alpha,
+        focal_gamma=focal_gamma,
+        focal_alpha=focal_alpha,
     )
 
-    run_dir = args.output_dir / run_name(args.architecture, args.run_name)
+    output_dir = Path(str(cfg.get("output_dir", "artifacts/runs")))
+    run_dir_name = run_name(architecture, cfg.get("run_name"))
+    run_dir = output_dir / run_dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    config = {
-        "args": vars(args),
+    epochs = int(cfg.get("epochs", 40))
+    patience = int(cfg.get("patience", 10))
+    early_stopping_metric = str(cfg.get("early_stopping_metric", "macro_f1"))
+    early_stopping_min_delta = float(cfg.get("early_stopping_min_delta", 0.0))
+    grad_accum_steps = int(cfg.get("grad_accum_steps", 1))
+    grad_clip_norm = float(cfg.get("grad_clip_norm", 1.0))
+    threshold_steps = int(cfg.get("threshold_steps", 101))
+
+    config_snapshot = {
         "device": str(device),
-        "architecture": args.architecture,
-        "num_layers": args.num_layers,
-        "num_heads": args.num_heads,
-        "aggregation": args.aggregation,
-        "feature_mode": args.feature_mode,
+        "architecture": architecture,
+        "num_layers": num_layers,
+        "num_heads": num_heads,
+        "aggregation": aggregation,
+        "feature_mode": feature_mode,
         "use_type_features": use_type_features,
         "use_numeric_features": use_numeric_features,
         "use_token_features": use_token_features,
-        "loss": args.loss,
-        "focal_gamma": args.focal_gamma,
-        "focal_alpha": args.focal_alpha,
-        "early_stopping_metric": args.early_stopping_metric,
-        "early_stopping_min_delta": args.early_stopping_min_delta,
+        "loss": loss_name,
+        "focal_gamma": focal_gamma,
+        "focal_alpha": focal_alpha,
+        "early_stopping_metric": early_stopping_metric,
+        "early_stopping_min_delta": early_stopping_min_delta,
         "train_summary": asdict(train_summary),
         "val_summary": asdict(val_summary),
         "test_summary": asdict(test_summary),
@@ -1047,49 +1101,55 @@ def main() -> None:
         "num_numeric_feats": num_numeric_feats,
         "num_token_feats": token_feature_dim,
         "token_feature_stats": token_feature_stats,
-        "split_path": str(args.split_path) if args.split_path is not None else None,
+        "split_path": str(split_path) if split_path is not None else None,
     }
-    (run_dir / "config.json").write_text(json.dumps(config, indent=2, default=str))
+    (run_dir / "config.json").write_text(json.dumps(config_snapshot, indent=2, default=str))
 
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
         loss_fn=loss_fn,
         device=device,
-        epochs=args.epochs,
-        patience=args.patience,
-        min_delta=args.early_stopping_min_delta,
-        early_stopping_metric=args.early_stopping_metric,
+        epochs=epochs,
+        patience=patience,
+        min_delta=early_stopping_min_delta,
+        early_stopping_metric=early_stopping_metric,
         checkpoint_dir=run_dir,
-        config_snapshot=config,
-        seed=args.seed,
-        grad_accum_steps=args.grad_accum_steps,
-        grad_clip_norm=args.grad_clip_norm,
-        architecture=args.architecture,
-        loss_name=args.loss,
+        config_snapshot=config_snapshot,
+        seed=seed,
+        grad_accum_steps=grad_accum_steps,
+        grad_clip_norm=grad_clip_norm,
+        architecture=architecture,
+        loss_name=loss_name,
+        wandb_run=wandb_run,
     )
+
+    max_nodes_per_batch = int(cfg.get("max_nodes_per_batch", 20000))
+    eval_max_nodes = int(cfg.get("eval_max_nodes_per_batch", 40000))
+    num_workers = int(cfg.get("num_workers", 0))
+    pin_memory = bool(cfg.get("pin_memory", False))
 
     def train_loader_fn(epoch: int) -> DataLoader:
         return build_loader(
             dataset=train_ds,
-            max_nodes_per_batch=args.max_nodes_per_batch,
+            max_nodes_per_batch=max_nodes_per_batch,
             max_edges_per_batch=edge_budget,
             shuffle=True,
-            seed=args.seed,
+            seed=seed,
             epoch=epoch,
-            num_workers=args.num_workers,
-            pin_memory=args.pin_memory,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
         )
 
     val_loader = build_loader(
         dataset=val_ds,
-        max_nodes_per_batch=args.eval_max_nodes_per_batch,
+        max_nodes_per_batch=eval_max_nodes,
         max_edges_per_batch=eval_edge_budget,
         shuffle=False,
-        seed=args.seed,
+        seed=seed,
         epoch=0,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_memory,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
     if torch.cuda.is_available():
@@ -1099,7 +1159,7 @@ def main() -> None:
     result: TrainResult = trainer.fit(
         train_loader_fn=train_loader_fn,
         val_loader=val_loader,
-        num_labels=args.num_labels,
+        num_labels=num_labels,
         evaluate_fn=evaluate,
     )
     train_duration_sec = time.perf_counter() - train_start
@@ -1109,46 +1169,46 @@ def main() -> None:
 
     val_loader = build_loader(
         dataset=val_ds,
-        max_nodes_per_batch=args.eval_max_nodes_per_batch,
+        max_nodes_per_batch=eval_max_nodes,
         max_edges_per_batch=eval_edge_budget,
         shuffle=False,
-        seed=args.seed,
+        seed=seed,
         epoch=0,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_memory,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     test_loader = build_loader(
         dataset=test_ds,
-        max_nodes_per_batch=args.eval_max_nodes_per_batch,
+        max_nodes_per_batch=eval_max_nodes,
         max_edges_per_batch=eval_edge_budget,
         shuffle=False,
-        seed=args.seed,
+        seed=seed,
         epoch=0,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_memory,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
     val_logits, val_targets = collect_logits_and_targets(
         model=model,
         loader=val_loader,
         device=device,
-        num_labels=args.num_labels,
+        num_labels=num_labels,
     )
     val_probs = torch.sigmoid(val_logits)
     thresholds = tune_thresholds(
         y_true=val_targets.int(),
         probs=val_probs,
-        steps=args.threshold_steps,
+        steps=threshold_steps,
     )
 
-    smell_labels = SMELL_LABELS[: args.num_labels]
+    smell_labels = SMELL_LABELS[:num_labels]
 
     eval_start = time.perf_counter()
     test_logits, test_targets = collect_logits_and_targets(
         model=model,
         loader=test_loader,
         device=device,
-        num_labels=args.num_labels,
+        num_labels=num_labels,
     )
     eval_duration_sec = time.perf_counter() - eval_start
     eval_throughput = len(test_ds) / max(eval_duration_sec, 1e-9)
@@ -1205,7 +1265,7 @@ def main() -> None:
         prec, rec, pr_thresh = precision_recall_curve(y_t, p)
         fpr, tpr, roc_thresh = roc_curve(y_t, p)
 
-        thresh_grid = np.linspace(0.0, 1.0, args.threshold_steps).tolist()
+        thresh_grid = np.linspace(0.0, 1.0, threshold_steps).tolist()
         f1_vals = [
             float(sklearn_f1_score(y_t, (p >= t).astype(int), zero_division=0))
             for t in thresh_grid
@@ -1242,13 +1302,13 @@ def main() -> None:
         "history": result.history,
         "threshold_tuning": {
             "strategy": "per_label_val_f1_grid",
-            "threshold_steps": int(args.threshold_steps),
+            "threshold_steps": threshold_steps,
             "fixed_threshold": 0.5,
             "pr_auc_threshold_independent": True,
         },
         "thresholds": {
             smell_labels[i] if i < len(smell_labels) else f"label_{i}": float(thresholds[i])
-            for i in range(args.num_labels)
+            for i in range(num_labels)
         },
         "test_fixed_0_5": test_metrics_fixed,
         "test_tuned": test_metrics_tuned,
@@ -1264,6 +1324,58 @@ def main() -> None:
     }
 
     (run_dir / "metrics.json").write_text(json.dumps(artifacts, indent=2))
+    return artifacts
+
+
+def main() -> None:
+    args = parse_args()
+
+    cfg: dict[str, Any] = {
+        "dataset_path": str(args.dataset_path),
+        "num_labels": args.num_labels,
+        "max_graphs": args.max_graphs,
+        "train_ratio": args.train_ratio,
+        "val_ratio": args.val_ratio,
+        "seed": args.seed,
+        "epochs": args.epochs,
+        "patience": args.patience,
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "dropout": args.dropout,
+        "hidden_dim": args.hidden_dim,
+        "type_emb_dim": args.type_emb_dim,
+        "grad_accum_steps": args.grad_accum_steps,
+        "grad_clip_norm": args.grad_clip_norm,
+        "max_nodes_per_batch": args.max_nodes_per_batch,
+        "max_edges_per_batch": args.max_edges_per_batch,
+        "eval_max_nodes_per_batch": args.eval_max_nodes_per_batch,
+        "eval_max_edges_per_batch": args.eval_max_edges_per_batch,
+        "num_workers": args.num_workers,
+        "pin_memory": args.pin_memory,
+        "to_undirected": args.to_undirected,
+        "threshold_steps": args.threshold_steps,
+        "device": args.device,
+        "feature_mode": args.feature_mode,
+        "architecture": args.architecture,
+        "num_layers": args.num_layers,
+        "num_heads": args.num_heads,
+        "aggregation": args.aggregation,
+        "loss": args.loss,
+        "focal_gamma": args.focal_gamma,
+        "focal_alpha": args.focal_alpha,
+        "early_stopping_metric": args.early_stopping_metric,
+        "early_stopping_min_delta": args.early_stopping_min_delta,
+        "output_dir": str(args.output_dir),
+        "run_name": args.run_name,
+        "token_vectors_path": str(args.token_vectors_path) if args.token_vectors_path else None,
+        "manifest_path": str(args.manifest_path) if args.manifest_path else None,
+        "token_progress_every": args.token_progress_every,
+        "split_path": str(args.split_path) if args.split_path else None,
+        "save_split": args.save_split,
+        "reuse_split": args.reuse_split,
+    }
+
+    run_training(cfg)
 
 
 if __name__ == "__main__":
