@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import copy
 import csv
+import concurrent.futures
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import hashlib
 import itertools
 import json
+import os
 from pathlib import Path
+import re
 import statistics
 import subprocess
 import sys
 import time
 from typing import Any, Callable
+
+import yaml
 
 from .config import set_nested_value
 from .constants import LABEL_ORDER
@@ -42,6 +47,31 @@ def to_path(project_root: Path, value: Any) -> Path:
     if path.is_absolute():
         return path
     return (project_root / path).resolve()
+
+
+def _discover_devices(parallel_cfg: dict[str, Any]) -> list[str]:
+    """Return list of CUDA_VISIBLE_DEVICES values for parallel ablation."""
+    explicit = parallel_cfg.get("devices", [])
+    if explicit:
+        return [str(d) for d in explicit]
+
+    # Auto-detect MIG instances from nvidia-smi
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            mig_uuids = re.findall(r"(MIG-[0-9a-fA-F-]+)", result.stdout)
+            if mig_uuids:
+                return mig_uuids
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    raise RuntimeError(
+        "ablation.parallel.enabled is true but no devices found. "
+        "Either set ablation.parallel.devices explicitly or create MIG instances."
+    )
 
 
 @dataclass
@@ -221,6 +251,7 @@ class PipelineRunner:
                     config=jsonable(config),
                     mode="online",
                     tags=wandb_cfg.get("tags", []),
+                    group=wandb_cfg.get("group"),
                 )
                 config["_wandb_run"] = wandb_run
             except ImportError:
@@ -283,28 +314,92 @@ class PipelineRunner:
             "stages": {name: asdict(state) for name, state in stages.items()},
         }
 
-    def _run_ablation(self) -> dict[str, Any]:
-        base_cfg = copy.deepcopy(self.config)
-        ablation_cfg = base_cfg.get("ablation", {})
-        grid = ablation_cfg.get("grid", {})
-        if not isinstance(grid, dict) or not grid:
-            raise ValueError("ablation.grid must be a non-empty mapping")
+    def _warm_caches(self, trial_configs: list[dict[str, Any]]) -> None:
+        """Run shared pre-training stages once per unique config to populate cache."""
+        seen_fingerprints: set[str] = set()
+        for cfg in trial_configs:
+            # Fingerprint only the pre-training config (construction + dataset + token_encoder)
+            pre_train = {
+                "construction": cfg.get("construction", {}),
+                "dataset": cfg.get("dataset", {}),
+                "token_encoder": cfg.get("token_encoder", {}),
+            }
+            fp = stable_fingerprint(pre_train)
+            if fp in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fp)
 
-        seeds = ablation_cfg.get("seeds", [base_cfg.get("training", {}).get("seed", 42)])
-        if not isinstance(seeds, list) or not seeds:
-            raise ValueError("ablation.seeds must be a non-empty list")
+            warm_cfg = copy.deepcopy(cfg)
+            warm_cfg.setdefault("training", {})["enabled"] = False
+            warm_cfg.setdefault("reporting", {})["enabled"] = False
+            warm_cfg.setdefault("ablation", {})["enabled"] = False
+            warm_cfg.pop("_wandb_run", None)
+            warm_cfg.setdefault("run", {}).setdefault("wandb", {})["enabled"] = False
+            print(f"[ablation] warming cache for pre-training fingerprint {fp[:12]}")
+            self._run_single(warm_cfg)
 
+        print(f"[ablation] cache warm complete ({len(seen_fingerprints)} unique pre-training configs)")
+
+    def _run_trial_subprocess(
+        self,
+        trial_yml: Path,
+        device: str,
+        trial_label: str,
+    ) -> dict[str, Any]:
+        """Run a single ablation trial as a subprocess pinned to a CUDA device."""
+        env = {**os.environ, "CUDA_VISIBLE_DEVICES": device}
+        proc = subprocess.run(
+            [sys.executable, str(self.project_root / "main.py"), "--config", str(trial_yml)],
+            capture_output=True,
+            text=True,
+            cwd=str(self.project_root),
+            env=env,
+        )
+        if proc.returncode != 0:
+            stderr_tail = (proc.stderr or "")[-500:]
+            raise RuntimeError(
+                f"Trial {trial_label} failed (device={device}, rc={proc.returncode}): {stderr_tail}"
+            )
+
+        # main.py prints the result dict as the last JSON line
+        # main.py prints json.dumps(result, indent=2) as the last output.
+        # Find the last top-level JSON object in stdout using brace depth tracking.
+        stdout_lines = proc.stdout.strip().splitlines()
+        result = None
+        json_buf: list[str] = []
+        depth = 0
+        for line in stdout_lines:
+            stripped = line.strip()
+            if not json_buf and stripped == "{":
+                json_buf = [line]
+                depth = 1
+            elif json_buf:
+                json_buf.append(line)
+                depth += stripped.count("{") - stripped.count("}")
+                if depth <= 0:
+                    try:
+                        result = json.loads("\n".join(json_buf))
+                    except json.JSONDecodeError:
+                        pass
+                    json_buf = []
+                    depth = 0
+
+        if result is None:
+            raise RuntimeError(
+                f"Trial {trial_label}: could not parse result JSON from subprocess stdout"
+            )
+        return result
+
+    def _run_ablation_sequential(
+        self,
+        base_cfg: dict[str, Any],
+        seeds: list[int],
+        combos: list[tuple],
+        grid_keys: list[str],
+        base_name: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Run ablation trials sequentially in-process (original behavior)."""
         run_cfg = base_cfg.get("run", {})
-        artifacts_root = to_path(self.project_root, run_cfg.get("artifacts_root", "artifacts"))
-        base_name = str(run_cfg.get("name", "ablation"))
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_dir = artifacts_root / "reports" / f"{base_name}_{timestamp}"
-        report_dir.mkdir(parents=True, exist_ok=True)
-
-        grid_keys = list(grid.keys())
-        value_lists = [value if isinstance(value, list) else [value] for value in grid.values()]
-        combos = list(itertools.product(*value_lists))
-
         records: list[dict[str, Any]] = []
         failed_records: list[dict[str, Any]] = []
         total_trials = len(combos) * len(seeds)
@@ -419,6 +514,182 @@ class PipelineRunner:
                         except Exception:
                             pass
                         wandb_run = None
+
+        return records, failed_records
+
+    def _run_ablation_parallel(
+        self,
+        base_cfg: dict[str, Any],
+        ablation_cfg: dict[str, Any],
+        seeds: list[int],
+        combos: list[tuple],
+        grid_keys: list[str],
+        report_dir: Path,
+        base_name: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Run ablation trials in parallel across multiple CUDA devices."""
+        parallel_cfg = ablation_cfg.get("parallel", {})
+        devices = _discover_devices(parallel_cfg)
+        max_workers = int(parallel_cfg.get("max_workers", 0)) or len(devices)
+        max_workers = min(max_workers, len(devices))
+
+        run_cfg = base_cfg.get("run", {})
+        wandb_cfg = run_cfg.get("wandb", {})
+        wandb_enabled = bool(wandb_cfg.get("enabled", False))
+
+        # Build all trial configs
+        trials: list[dict[str, Any]] = []
+        for combo_idx, combo_values in enumerate(combos, start=1):
+            combo = {grid_keys[i]: combo_values[i] for i in range(len(grid_keys))}
+            for seed in seeds:
+                trial_cfg = copy.deepcopy(base_cfg)
+                trial_cfg.setdefault("ablation", {})["enabled"] = False
+                trial_cfg.setdefault("training", {})["seed"] = int(seed)
+                for dotted_key, value in combo.items():
+                    set_nested_value(trial_cfg, dotted_key, value)
+
+                trial_name = f"{base_name}_c{combo_idx:03d}_s{seed}"
+                trial_cfg.setdefault("run", {})["name"] = trial_name
+
+                # Configure W&B so the subprocess handles its own run
+                if wandb_enabled:
+                    combo_tags = [f"{k.split('.')[-1]}={v}" for k, v in sorted(combo.items())]
+                    trial_tags = combo_tags + [f"seed={seed}", "ablation"] + list(wandb_cfg.get("tags", []))
+                    group_name = "_".join(f"{k.split('.')[-1]}={v}" for k, v in sorted(combo.items()))
+                    trial_wandb = trial_cfg.setdefault("run", {}).setdefault("wandb", {})
+                    trial_wandb["enabled"] = True
+                    trial_wandb["tags"] = trial_tags
+                    trial_wandb["group"] = group_name
+
+                trial_cfg.pop("_wandb_run", None)
+                trials.append({
+                    "cfg": trial_cfg,
+                    "combo": combo,
+                    "seed": seed,
+                    "combo_idx": combo_idx,
+                    "name": trial_name,
+                })
+
+        total = len(trials)
+        print(f"[ablation] parallel mode: {total} trials across {max_workers} workers on {len(devices)} devices")
+
+        # Warm shared caches before parallel dispatch
+        self._warm_caches([t["cfg"] for t in trials])
+
+        # Write trial configs to disk
+        trials_dir = report_dir / "trials"
+        trials_dir.mkdir(parents=True, exist_ok=True)
+        trial_ymls: list[Path] = []
+        for i, trial in enumerate(trials):
+            yml_path = trials_dir / f"trial_{i:04d}.yml"
+            yml_path.write_text(yaml.safe_dump(trial["cfg"], sort_keys=False))
+            trial_ymls.append(yml_path)
+
+        # Dispatch in parallel
+        records: list[dict[str, Any]] = []
+        failed_records: list[dict[str, Any]] = []
+        completed = 0
+
+        def run_one(idx: int) -> tuple[int, dict[str, Any]]:
+            device = devices[idx % len(devices)]
+            trial = trials[idx]
+            label = f"{trial['name']} (device={device})"
+            result = self._run_trial_subprocess(trial_ymls[idx], device, label)
+            return idx, result
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_idx = {pool.submit(run_one, i): i for i in range(total)}
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                trial = trials[idx]
+                completed += 1
+                try:
+                    _, result = future.result()
+                    stage_info = result.get("stages", {}).get("training")
+                    if stage_info is None:
+                        raise ValueError("Training stage missing from subprocess result")
+
+                    metrics_path = Path(stage_info["outputs"]["metrics_path"])
+                    metrics = json.loads(metrics_path.read_text())
+
+                    record = {
+                        "seed": trial["seed"],
+                        "combo": trial["combo"],
+                        "run_dir": stage_info["outputs"]["run_dir"],
+                        "best_epoch": int(metrics.get("best_epoch", -1)),
+                        "f1_micro_fixed": float(metrics.get("test_fixed_0_5", {}).get("f1_micro", 0.0)),
+                        "f1_macro_fixed": float(metrics.get("test_fixed_0_5", {}).get("f1_macro", 0.0)),
+                        "f1_micro_tuned": float(metrics.get("test_tuned", {}).get("f1_micro", 0.0)),
+                        "f1_macro_tuned": float(metrics.get("test_tuned", {}).get("f1_macro", 0.0)),
+                        "pr_auc_tuned": float(metrics.get("test_tuned", {}).get("pr_auc_macro", 0.0)),
+                        "hamming_loss_tuned": float(metrics.get("test_tuned", {}).get("hamming_loss", 0.0)),
+                        "subset_acc_tuned": float(metrics.get("test_tuned", {}).get("subset_accuracy", 0.0)),
+                        "pr_auc_fixed": float(metrics.get("test_fixed_0_5", {}).get("pr_auc_macro", 0.0)),
+                        "hamming_loss_fixed": float(metrics.get("test_fixed_0_5", {}).get("hamming_loss", 0.0)),
+                        "subset_acc_fixed": float(metrics.get("test_fixed_0_5", {}).get("subset_accuracy", 0.0)),
+                        "per_label_tuned": metrics.get("test_tuned", {}).get("per_label", {}),
+                        "balanced_acc_tuned": float(metrics.get("test_tuned", {}).get("balanced_acc_macro", 0.0)),
+                        "mcc_tuned": float(metrics.get("test_tuned", {}).get("mcc_macro", 0.0)),
+                        "roc_auc_tuned": float(metrics.get("test_tuned", {}).get("roc_auc_macro", 0.0)),
+                        "train_duration_sec": float(metrics.get("profiling", {}).get("train_duration_sec", 0.0)),
+                        "peak_gpu_memory_mb": float(metrics.get("profiling", {}).get("peak_gpu_memory_mb", 0.0)),
+                        "train_throughput": float(metrics.get("profiling", {}).get("train_throughput_graphs_per_sec", 0.0)),
+                    }
+                    records.append(record)
+                    f1 = record["f1_macro_tuned"]
+                    device = devices[idx % len(devices)]
+                    print(f"[ablation] {completed}/{total} DONE {trial['name']} on {device} | f1_macro={f1:.4f}")
+
+                except Exception as exc:
+                    failed_records.append({"seed": trial["seed"], "combo": trial["combo"], "error": str(exc)})
+                    print(f"[ablation] {completed}/{total} FAILED {trial['name']}: {exc!r}")
+
+        return records, failed_records
+
+    def _run_ablation(self) -> dict[str, Any]:
+        base_cfg = copy.deepcopy(self.config)
+        ablation_cfg = base_cfg.get("ablation", {})
+        grid = ablation_cfg.get("grid", {})
+        if not isinstance(grid, dict) or not grid:
+            raise ValueError("ablation.grid must be a non-empty mapping")
+
+        seeds = ablation_cfg.get("seeds", [base_cfg.get("training", {}).get("seed", 42)])
+        if not isinstance(seeds, list) or not seeds:
+            raise ValueError("ablation.seeds must be a non-empty list")
+
+        run_cfg = base_cfg.get("run", {})
+        artifacts_root = to_path(self.project_root, run_cfg.get("artifacts_root", "artifacts"))
+        base_name = str(run_cfg.get("name", "ablation"))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_dir = artifacts_root / "reports" / f"{base_name}_{timestamp}"
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        grid_keys = list(grid.keys())
+        value_lists = [value if isinstance(value, list) else [value] for value in grid.values()]
+        combos = list(itertools.product(*value_lists))
+
+        # Branch: parallel or sequential execution
+        parallel_cfg = ablation_cfg.get("parallel", {})
+        use_parallel = bool(parallel_cfg.get("enabled", False))
+
+        if use_parallel:
+            records, failed_records = self._run_ablation_parallel(
+                base_cfg=base_cfg,
+                ablation_cfg=ablation_cfg,
+                seeds=seeds,
+                combos=combos,
+                grid_keys=grid_keys,
+                report_dir=report_dir,
+                base_name=base_name,
+            )
+        else:
+            records, failed_records = self._run_ablation_sequential(
+                base_cfg=base_cfg,
+                seeds=seeds,
+                combos=combos,
+                grid_keys=grid_keys,
+                base_name=base_name,
+            )
 
         if not records:
             raise RuntimeError("all ablation trials failed; no results to aggregate")

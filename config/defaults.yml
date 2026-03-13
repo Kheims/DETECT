@@ -54,7 +54,7 @@ training:
   lr: 0.0005
   weight_decay: 0.00005
   dropout: 0.2
-  hidden_dim: 256
+  hidden_dim: 512
   type_emb_dim: 128
   grad_accum_steps: 1
   grad_clip_norm: 1.0
@@ -70,7 +70,7 @@ training:
   feature_mode: type_numeric
   # Architecture selection
   architecture: gcn
-  num_layers: 2
+  num_layers: 3
   gat_num_heads: 4
   graphsage_aggregation: mean
   gat_max_nodes_per_batch: 12000
@@ -89,6 +89,12 @@ reporting:
 ablation:
   enabled: false
   seeds: [42, 43, 44, 45, 46]
+  baseline: {}
+  parallel:
+    enabled: false
+    devices: []      # MIG UUIDs, device indices or empty for auto-detect
+    max_workers: 0   # 0 = len(devices)
+  # TODO: add token_encoder as a future ablation axis
   grid:
     training.architecture: [gcn, gat, graphsage]
     training.loss: [weighted_bce, focal]
