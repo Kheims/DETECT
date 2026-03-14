@@ -30,12 +30,15 @@ import platform
 import shutil
 import subprocess
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import torch
 import torch.nn as nn
+from torch.distributed.algorithms.join import Join
+from torch.nn.parallel import DistributedDataParallel
 from torch.optim import Optimizer
 from torch_geometric.loader import DataLoader
 
@@ -413,26 +416,32 @@ class Trainer:
 
         self.optimizer.zero_grad()
 
-        for batch in loader:
-            batch = batch.to(self.device)
-            logits = self.model(batch)
-            y = batch.y.view(-1, num_labels).float()
+        # Join handles uneven batch counts across DDP ranks — early-finishing
+        # ranks participate in dummy allreduce until all ranks are done.
+        is_ddp = isinstance(self.model, DistributedDataParallel)
+        ctx = Join([self.model]) if is_ddp else nullcontext()
 
-            loss = self.loss_fn(logits, y)
-            scaled_loss = loss / self.grad_accum_steps
-            scaled_loss.backward()
+        with ctx:
+            for batch in loader:
+                batch = batch.to(self.device)
+                logits = self.model(batch)
+                y = batch.y.view(-1, num_labels).float()
 
-            total_loss += loss.item() * batch.num_graphs
-            total_graphs += batch.num_graphs
-            step_count += 1
+                loss = self.loss_fn(logits, y)
+                scaled_loss = loss / self.grad_accum_steps
+                scaled_loss.backward()
 
-            if step_count % self.grad_accum_steps == 0:
-                if self.grad_clip_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.grad_clip_norm
-                    )
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                total_loss += loss.item() * batch.num_graphs
+                total_graphs += batch.num_graphs
+                step_count += 1
+
+                if step_count % self.grad_accum_steps == 0:
+                    if self.grad_clip_norm > 0.0:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.grad_clip_norm
+                        )
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
 
         # Flush remaining accumulated gradients after the final batch.
         if step_count % self.grad_accum_steps != 0:
