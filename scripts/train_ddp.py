@@ -275,6 +275,7 @@ def main() -> None:
         architecture=architecture,
         loss_name=loss_name,
         wandb_run=None,
+        is_main=is_main,
     )
 
     max_nodes_per_batch = int(cfg.get("max_nodes_per_batch", 20000))

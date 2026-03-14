@@ -196,6 +196,7 @@ class Trainer:
         architecture: str = "gcn",
         loss_name: str = "weighted_bce",
         wandb_run: Any | None = None,
+        is_main: bool = True,
     ) -> None:
         if early_stopping_metric not in METRIC_KEY_MAP:
             raise ValueError(
@@ -218,6 +219,7 @@ class Trainer:
         self.architecture = architecture
         self.loss_name = loss_name
         self.wandb_run = wandb_run
+        self.is_main = is_main
 
     # ------------------------------------------------------------------
     # Public API
@@ -255,7 +257,8 @@ class Trainer:
             TrainResult with best epoch, best metric value, checkpoint path,
             per-epoch history and whether early stopping was triggered.
         """
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        if self.is_main:
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         # Checkpoint paths: named file for self-documentation plus best_model.pt
         # for pipeline compatibility (open question 2 resolution in RESEARCH.md).
@@ -264,8 +267,9 @@ class Trainer:
         )
         compat_ckpt = self.checkpoint_dir / "best_model.pt"
 
-        # Move model and loss to device.
-        self.model.to(self.device)
+        # Move model and loss to device (skip if DDP already placed them).
+        if not isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+            self.model.to(self.device)
         self.loss_fn.to(self.device)
 
         metric_key = METRIC_KEY_MAP[self.early_stopping_metric]
@@ -298,36 +302,37 @@ class Trainer:
             }
             history.append(entry)
 
-            if self.wandb_run is not None:
-                wandb_payload: dict[str, float] = {
-                    "epoch": epoch,
-                    "train/loss": avg_loss,
-                    "val/f1_micro": entry["val_f1_micro"],
-                    "val/f1_macro": entry["val_f1_macro"],
-                    "val/pr_auc_macro": entry["val_pr_auc_macro"],
-                }
-                f1_per_label = val_metrics.get("f1_per_label", [])
-                label_names = ["feature_envy", "long_method", "blob", "data_class"]
-                for i, name in enumerate(label_names):
-                    if i < len(f1_per_label):
-                        wandb_payload[f"val/f1_{name}"] = float(f1_per_label[i])
-                self.wandb_run.log(wandb_payload, step=epoch)
+            if self.is_main:
+                if self.wandb_run is not None:
+                    wandb_payload: dict[str, float] = {
+                        "epoch": epoch,
+                        "train/loss": avg_loss,
+                        "val/f1_micro": entry["val_f1_micro"],
+                        "val/f1_macro": entry["val_f1_macro"],
+                        "val/pr_auc_macro": entry["val_pr_auc_macro"],
+                    }
+                    f1_per_label = val_metrics.get("f1_per_label", [])
+                    label_names = ["feature_envy", "long_method", "blob", "data_class"]
+                    for i, name in enumerate(label_names):
+                        if i < len(f1_per_label):
+                            wandb_payload[f"val/f1_{name}"] = float(f1_per_label[i])
+                    self.wandb_run.log(wandb_payload, step=epoch)
 
-            print(
-                f"Epoch {epoch:03d} | loss={avg_loss:.4f} | "
-                f"val_f1_micro={entry['val_f1_micro']:.4f} | "
-                f"val_f1_macro={entry['val_f1_macro']:.4f} | "
-                f"val_pr_auc={entry['val_pr_auc_macro']:.4f}"
-            )
+                print(
+                    f"Epoch {epoch:03d} | loss={avg_loss:.4f} | "
+                    f"val_f1_micro={entry['val_f1_micro']:.4f} | "
+                    f"val_f1_macro={entry['val_f1_macro']:.4f} | "
+                    f"val_pr_auc={entry['val_pr_auc_macro']:.4f}"
+                )
 
-            if epoch % 10 == 0 or epoch == 1:
-                f1_per_label = val_metrics.get("f1_per_label", [])
-                if f1_per_label:
-                    parts = [f"{v:.3f}" for v in f1_per_label]
-                    print(f"  per-label f1: {' | '.join(parts)}")
+                if epoch % 10 == 0 or epoch == 1:
+                    f1_per_label = val_metrics.get("f1_per_label", [])
+                    if f1_per_label:
+                        parts = [f"{v:.3f}" for v in f1_per_label]
+                        print(f"  per-label f1: {' | '.join(parts)}")
 
-            if entry["val_f1_macro"] < 0.05 and epoch > 5:
-                print(f"  [warn] val_f1_macro={entry['val_f1_macro']:.4f} very low -- possible label collapse")
+                if entry["val_f1_macro"] < 0.05 and epoch > 5:
+                    print(f"  [warn] val_f1_macro={entry['val_f1_macro']:.4f} very low -- possible label collapse")
 
             val_metric = float(val_metrics[metric_key])
             improved = (val_metric - best_metric) > self.min_delta
@@ -340,24 +345,26 @@ class Trainer:
                 best_state = {
                     k: v.cpu().clone() for k, v in self.model.state_dict().items()
                 }
-                _save_checkpoint(
-                    named_ckpt,
-                    self.model,
-                    epoch,
-                    val_metric,
-                    self.config_snapshot,
-                    history,
-                    self.seed,
-                )
-                shutil.copy2(named_ckpt, compat_ckpt)
+                if self.is_main:
+                    _save_checkpoint(
+                        named_ckpt,
+                        self.model,
+                        epoch,
+                        val_metric,
+                        self.config_snapshot,
+                        history,
+                        self.seed,
+                    )
+                    shutil.copy2(named_ckpt, compat_ckpt)
             else:
                 no_improve += 1
 
             if no_improve >= self.patience:
-                print(
-                    f"Early stopping at epoch {epoch} "
-                    f"(no improvement for {self.patience} epochs)"
-                )
+                if self.is_main:
+                    print(
+                        f"Early stopping at epoch {epoch} "
+                        f"(no improvement for {self.patience} epochs)"
+                    )
                 stopped_early = True
                 break
 
