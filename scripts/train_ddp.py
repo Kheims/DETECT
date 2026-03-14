@@ -267,7 +267,7 @@ def main() -> None:
         patience=patience,
         min_delta=early_stopping_min_delta,
         early_stopping_metric=early_stopping_metric,
-        checkpoint_dir=run_dir if is_main else None,
+        checkpoint_dir=run_dir,
         config_snapshot={} if not is_main else config_snapshot,
         seed=seed,
         grad_accum_steps=grad_accum_steps,
