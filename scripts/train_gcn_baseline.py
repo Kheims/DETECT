@@ -96,10 +96,9 @@ class DynamicBudgetBatchSampler(Sampler[list[int]]):
             exceeds_edges = self.max_edges is not None and n_edges > self.max_edges
 
             if exceeds_nodes or exceeds_edges:
-                if batch and not self.drop_last:
+                if batch:
                     yield batch
-                if not self.drop_last:
-                    yield [idx]
+                yield [idx]
                 batch = []
                 batch_nodes = 0
                 batch_edges = 0
@@ -111,8 +110,7 @@ class DynamicBudgetBatchSampler(Sampler[list[int]]):
             )
 
             if batch and (would_exceed_nodes or would_exceed_edges):
-                if not self.drop_last:
-                    yield batch
+                yield batch
                 batch = [idx]
                 batch_nodes = n_nodes
                 batch_edges = n_edges
@@ -159,6 +157,7 @@ class DistributedDynamicBudgetBatchSampler(DynamicBudgetBatchSampler):
             max_edges=max_edges,
             shuffle=shuffle,
             seed=seed,
+            drop_last=True,
         )
         self.rank = rank
         self.world_size = world_size
