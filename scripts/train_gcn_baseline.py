@@ -159,7 +159,6 @@ class DistributedDynamicBudgetBatchSampler(DynamicBudgetBatchSampler):
             max_edges=max_edges,
             shuffle=shuffle,
             seed=seed,
-            drop_last=True,
         )
         self.rank = rank
         self.world_size = world_size
