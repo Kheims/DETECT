@@ -83,6 +83,11 @@ training:
   early_stopping_metric: macro_f1
   early_stopping_min_delta: 0.0
 
+distributed:
+  enabled: false
+  backend: nccl
+  nproc_per_node: 1
+
 reporting:
   enabled: true
 

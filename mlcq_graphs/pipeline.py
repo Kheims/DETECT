@@ -981,9 +981,12 @@ class PipelineRunner:
         stage_cfg = config.get("training", {})
         run_cfg = config.get("run", {})
 
+        distributed_config = config.get("distributed", {})
+
         payload = {
             "stage": "training",
             "config": stage_cfg,
+            "distributed_config": distributed_config,
             "dataset_fingerprint": dataset_state.fingerprint,
             "token_encoder_fingerprint": token_state.fingerprint if token_state else None,
         }
@@ -1082,11 +1085,38 @@ class PipelineRunner:
             train_cfg["token_vectors_path"] = token_state.outputs["vectors_path"]
             train_cfg["manifest_path"] = construction_state.outputs["manifest_path"]
 
-        wandb_run = config.get("_wandb_run")
-        if bool(run_cfg.get("print_commands", True)):
-            print(f"[train] in-process  architecture={architecture} loss={train_cfg['loss']} seed={split_seed}")
+        use_distributed = bool(distributed_config.get("enabled", False))
 
-        run_training(train_cfg, wandb_run=wandb_run)
+        if use_distributed:
+            nproc = int(distributed_config.get("nproc_per_node", 1))
+            backend = str(distributed_config.get("backend", "nccl"))
+            script_path = str(self.project_root / "scripts" / "train_ddp.py")
+
+            cmd = [
+                sys.executable, "-m", "torch.distributed.run",
+                "--standalone", "--nnodes=1",
+                f"--nproc_per_node={nproc}",
+                script_path,
+            ]
+            for key, val in train_cfg.items():
+                if val is None:
+                    continue
+                flag = f"--{key.replace('_', '-')}"
+                cmd.extend([flag, str(val)])
+            cmd.extend(["--distributed-backend", backend])
+
+            if bool(run_cfg.get("print_commands", True)):
+                print(f"[train] torchrun x{nproc}  arch={architecture} loss={train_cfg['loss']} seed={split_seed}")
+
+            import subprocess
+            subprocess.run(cmd, check=True, cwd=str(self.project_root))
+        else:
+            wandb_run = config.get("_wandb_run")
+            if bool(run_cfg.get("print_commands", True)):
+                print(f"[train] in-process  arch={architecture} loss={train_cfg['loss']} seed={split_seed}")
+
+            run_training(train_cfg, wandb_run=wandb_run)
+
         self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
 
         return StageState(
