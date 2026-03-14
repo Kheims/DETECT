@@ -40,6 +40,7 @@ from mlcq_graphs.models import get_model
 from mlcq_graphs.training import Trainer, TrainResult, build_loss_fn
 from scripts.train_gcn_baseline import (
     SMELL_LABELS,
+    DynamicBudgetBatchSampler,
     apply_split_indices,
     attach_token_vectors,
     build_loader,
@@ -56,6 +57,78 @@ from scripts.train_gcn_baseline import (
     summarize_dataset,
     tune_thresholds,
 )
+
+
+class DistributedDynamicBudgetBatchSampler(DynamicBudgetBatchSampler):
+    """DDP-aware variant that rank-partitions samples before budget batching.
+
+    Each rank sees a disjoint subset of graph indices (stride-based slicing)
+    with the same per-GPU OOM protection from the parent sampler.
+    """
+
+    def __init__(
+        self,
+        node_counts: list[int],
+        edge_counts: list[int],
+        max_nodes: int,
+        max_edges: int | None,
+        shuffle: bool,
+        seed: int,
+        rank: int,
+        world_size: int,
+    ) -> None:
+        super().__init__(
+            node_counts=node_counts,
+            edge_counts=edge_counts,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+            shuffle=shuffle,
+            seed=seed,
+            drop_last=True,
+        )
+        self.rank = rank
+        self.world_size = world_size
+
+    def _ordered_indices(self) -> list[int]:
+        all_indices = super()._ordered_indices()
+        # Pad to make divisible by world_size (same as DistributedSampler)
+        remainder = len(all_indices) % self.world_size
+        if remainder:
+            all_indices = all_indices + all_indices[: self.world_size - remainder]
+        return all_indices[self.rank :: self.world_size]
+
+
+def build_ddp_loader(
+    dataset: list,
+    max_nodes_per_batch: int,
+    max_edges_per_batch: int | None,
+    shuffle: bool,
+    seed: int,
+    epoch: int,
+    num_workers: int,
+    pin_memory: bool,
+    rank: int,
+    world_size: int,
+) -> DataLoader:
+    node_counts = [int(d.num_nodes) for d in dataset]
+    edge_counts = [int(d.edge_index.size(1)) for d in dataset]
+    batch_sampler = DistributedDynamicBudgetBatchSampler(
+        node_counts=node_counts,
+        edge_counts=edge_counts,
+        max_nodes=max_nodes_per_batch,
+        max_edges=max_edges_per_batch,
+        shuffle=shuffle,
+        seed=seed,
+        rank=rank,
+        world_size=world_size,
+    )
+    batch_sampler.set_epoch(epoch)
+    return DataLoader(
+        dataset,
+        batch_sampler=batch_sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
 
 
 def init_distributed(backend: str = "nccl") -> tuple[int, int, int, bool]:
@@ -284,7 +357,7 @@ def main() -> None:
     pin_memory = bool(cfg.get("pin_memory", False))
 
     def train_loader_fn(epoch: int) -> DataLoader:
-        return build_loader(
+        return build_ddp_loader(
             dataset=train_ds,
             max_nodes_per_batch=max_nodes_per_batch,
             max_edges_per_batch=edge_budget,

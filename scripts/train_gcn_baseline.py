@@ -132,41 +132,6 @@ class DynamicBudgetBatchSampler(Sampler[list[int]]):
         return max(1, estimate)
 
 
-class DistributedDynamicBudgetBatchSampler(DynamicBudgetBatchSampler):
-    """DDP-aware variant that rank-partitions samples before budget batching.
-
-    Each rank sees a disjoint subset of graph indices (stride-based slicing)
-    with the same per-GPU OOM protection from the parent sampler.
-    """
-
-    def __init__(
-        self,
-        node_counts: list[int],
-        edge_counts: list[int],
-        max_nodes: int,
-        max_edges: int | None,
-        shuffle: bool,
-        seed: int,
-        rank: int,
-        world_size: int,
-    ) -> None:
-        super().__init__(
-            node_counts=node_counts,
-            edge_counts=edge_counts,
-            max_nodes=max_nodes,
-            max_edges=max_edges,
-            shuffle=shuffle,
-            seed=seed,
-            drop_last=True,
-        )
-        self.rank = rank
-        self.world_size = world_size
-
-    def _ordered_indices(self) -> list[int]:
-        all_indices = super()._ordered_indices()
-        return all_indices[self.rank :: self.world_size]
-
-
 def set_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
@@ -620,31 +585,17 @@ def build_loader(
     epoch: int,
     num_workers: int,
     pin_memory: bool,
-    rank: int = 0,
-    world_size: int = 1,
 ) -> DataLoader:
     node_counts = [int(d.num_nodes) for d in dataset]
     edge_counts = [int(d.edge_index.size(1)) for d in dataset]
-    if world_size > 1:
-        batch_sampler = DistributedDynamicBudgetBatchSampler(
-            node_counts=node_counts,
-            edge_counts=edge_counts,
-            max_nodes=max_nodes_per_batch,
-            max_edges=max_edges_per_batch,
-            shuffle=shuffle,
-            seed=seed,
-            rank=rank,
-            world_size=world_size,
-        )
-    else:
-        batch_sampler = DynamicBudgetBatchSampler(
-            node_counts=node_counts,
-            edge_counts=edge_counts,
-            max_nodes=max_nodes_per_batch,
-            max_edges=max_edges_per_batch,
-            shuffle=shuffle,
-            seed=seed,
-        )
+    batch_sampler = DynamicBudgetBatchSampler(
+        node_counts=node_counts,
+        edge_counts=edge_counts,
+        max_nodes=max_nodes_per_batch,
+        max_edges=max_edges_per_batch,
+        shuffle=shuffle,
+        seed=seed,
+    )
     batch_sampler.set_epoch(epoch)
     return DataLoader(
         dataset,
