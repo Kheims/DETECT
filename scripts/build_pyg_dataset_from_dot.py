@@ -248,15 +248,61 @@ def safe_int(value: object, default: int = 0) -> int:
     return default
 
 
+def _compute_tree_features(
+    ordered_nodes: list[NodeRecord],
+    edges: list[tuple[str, str, str]],
+) -> tuple[list[int], list[int]]:
+    """Compute depth and subtree_size for each node from Child edges.
+
+    Returns (depths, subtree_sizes) aligned with ordered_nodes.
+    """
+    id_to_idx = {node.dot_id: i for i, node in enumerate(ordered_nodes)}
+    n = len(ordered_nodes)
+    children: list[list[int]] = [[] for _ in range(n)]
+    has_parent = [False] * n
+
+    for src_dot, dst_dot, edge_type in edges:
+        if edge_type != "Child":
+            continue
+        if src_dot not in id_to_idx or dst_dot not in id_to_idx:
+            continue
+        parent_idx = id_to_idx[src_dot]
+        child_idx = id_to_idx[dst_dot]
+        children[parent_idx].append(child_idx)
+        has_parent[child_idx] = True
+
+    # Find roots (nodes with no parent in the Child edge set)
+    roots = [i for i in range(n) if not has_parent[i]]
+
+    # BFS for depth
+    depths = [0] * n
+    queue = list(roots)
+    for node_idx in queue:
+        for child_idx in children[node_idx]:
+            depths[child_idx] = depths[node_idx] + 1
+            queue.append(child_idx)
+
+    # Bottom-up subtree sizes (post-order via reversed BFS)
+    subtree_sizes = [1] * n
+    for node_idx in reversed(queue):
+        for child_idx in children[node_idx]:
+            subtree_sizes[node_idx] += subtree_sizes[child_idx]
+
+    return depths, subtree_sizes
+
+
 def build_features(
     ordered_nodes: list[NodeRecord],
+    edges: list[tuple[str, str, str]],
 ) -> tuple[torch.Tensor, list[str]]:
     node_types: list[str] = []
 
+    depths, subtree_sizes = _compute_tree_features(ordered_nodes, edges)
+    max_depth = max(1, max(depths)) if depths else 1
+    max_subtree = max(1, max(subtree_sizes)) if subtree_sizes else 1
+
     end_lines = [safe_int(node.attrs.get("end_line"), 0) for node in ordered_nodes]
-    end_cols = [safe_int(node.attrs.get("end_col"), 0) for node in ordered_nodes]
     max_line = max(1, max(end_lines) if end_lines else 1)
-    max_col = max(1, max(end_cols) if end_cols else 1)
 
     token_lengths = []
     for node in ordered_nodes:
@@ -266,7 +312,7 @@ def build_features(
     max_token_len = max(1, max(token_lengths) if token_lengths else 1)
 
     rows: list[list[float]] = []
-    for node in ordered_nodes:
+    for i, node in enumerate(ordered_nodes):
         node_kind = str(node.attrs.get("node_kind", "SyntaxNode"))
         node_type = str(node.attrs.get("node_type", "unknown"))
         node_types.append(node_type)
@@ -274,10 +320,9 @@ def build_features(
         is_token = 1.0 if node_kind == "SyntaxToken" else 0.0
 
         start_line = float(safe_int(node.attrs.get("start_line"), 0))
-        start_col = float(safe_int(node.attrs.get("start_col"), 0))
         end_line = float(safe_int(node.attrs.get("end_line"), int(start_line)))
-
         span_lines = max(0.0, end_line - start_line) + 1.0
+
         token_len = 0.0
         if is_token > 0:
             token_len = float(len(str(node.attrs.get("token_text", ""))))
@@ -285,8 +330,8 @@ def build_features(
         rows.append(
             [
                 is_token,
-                start_line / max_line,
-                start_col / max_col,
+                depths[i] / max_depth,
+                subtree_sizes[i] / max_subtree,
                 span_lines / max_line,
                 token_len / max_token_len,
             ]
@@ -294,6 +339,65 @@ def build_features(
 
     x = torch.tensor(rows, dtype=torch.float32)
     return x, node_types
+
+
+# Number of graph-level features produced by compute_graph_level_features().
+# Must stay in sync with the function below — models use this to size the classifier head.
+NUM_GRAPH_FEATURES = 6
+
+
+def compute_graph_level_features(
+    ordered_nodes: list[NodeRecord],
+    depths: list[int],
+) -> torch.Tensor:
+    """Compute graph-level summary features from node types and structure.
+
+    Returns a 1-D tensor of NUM_GRAPH_FEATURES floats.
+    """
+    n = len(ordered_nodes)
+    if n == 0:
+        return torch.zeros(NUM_GRAPH_FEATURES, dtype=torch.float32)
+
+    method_invocation_count = 0
+    field_access_count = 0
+    expression_name_count = 0
+    type_name_count = 0
+    identifier_set: set[str] = set()
+    token_count = 0
+
+    for node in ordered_nodes:
+        node_type = str(node.attrs.get("node_type", ""))
+        node_kind = str(node.attrs.get("node_kind", ""))
+
+        if node_type in ("methodInvocation", "methodInvocation_lf_primary",
+                         "methodInvocation_lfno_primary"):
+            method_invocation_count += 1
+        elif node_type in ("fieldAccess", "fieldAccess_lf_primary"):
+            field_access_count += 1
+        elif node_type == "expressionName":
+            expression_name_count += 1
+        elif node_type == "typeName":
+            type_name_count += 1
+
+        if node_kind == "SyntaxToken":
+            token_count += 1
+            if node_type == "Identifier":
+                token_text = str(node.attrs.get("token_text", ""))
+                if token_text:
+                    identifier_set.add(token_text)
+
+    max_depth = max(depths) if depths else 0
+    safe_n = max(1, n)
+    safe_tokens = max(1, token_count)
+
+    return torch.tensor([
+        method_invocation_count / safe_n,
+        field_access_count / safe_n,
+        expression_name_count / safe_n,
+        type_name_count / safe_n,
+        len(identifier_set) / safe_tokens,
+        max_depth / safe_n,
+    ], dtype=torch.float32)
 
 
 def parse_bool_token(value: str) -> bool | None:
@@ -447,7 +551,11 @@ def main() -> None:
                 key=lambda rec: safe_int(rec.attrs.get("node_index"), safe_int(rec.dot_id[1:], 0)),
             )
 
-            x, node_types = build_features(ordered_nodes)
+            x, node_types = build_features(ordered_nodes, edges_raw)
+
+            # Reuse depths from build_features for graph-level features
+            depths_for_graph, _ = _compute_tree_features(ordered_nodes, edges_raw)
+            graph_x = compute_graph_level_features(ordered_nodes, depths_for_graph)
 
             type_ids = []
             for node_type in node_types:
@@ -483,6 +591,7 @@ def main() -> None:
                 edge_index=edge_index,
                 y=y,
                 type_id=type_id_tensor,
+                graph_x=graph_x,
             )
             graph.json_index = safe_int(row.get("json_index"), -1)
             dataset.append(graph)
