@@ -13,6 +13,11 @@ from antlr4 import CommonTokenStream, InputStream, ParserRuleContext, Token
 from antlr4.error.ErrorListener import ErrorListener
 from antlr4.tree.Tree import TerminalNode
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ANTLR_GENERATED_DIR = ROOT / "tools" / "antlr" / "generated"
@@ -518,6 +523,12 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
         executor = ProcessPoolExecutor(max_workers=args.workers)
         records_iter = executor.map(_process_dir_task, tasks, chunksize=args.chunksize)
 
+    pbar = None
+    if tqdm is not None:
+        pbar = tqdm(total=len(tasks), desc="from-dir", unit="file",
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] ok={postfix[ok]} fail={postfix[fail]}",
+                    postfix={"ok": 0, "fail": 0})
+
     with args.manifest_path.open("w") as manifest_fh:
         try:
             for processed, record in enumerate(records_iter, start=1):
@@ -531,12 +542,18 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
                 elif status == "skipped":
                     skipped += 1
 
-                if processed % args.progress_every == 0:
+                if pbar is not None:
+                    pbar.postfix["ok"] = success
+                    pbar.postfix["fail"] = failed
+                    pbar.update(1)
+                elif processed % args.progress_every == 0 or processed == len(tasks):
                     print(
                         f"[from-dir] processed={processed}/{len(subset)} "
                         f"success={success} failed={failed} skipped={skipped}"
                     )
         finally:
+            if pbar is not None:
+                pbar.close()
             if executor is not None:
                 executor.shutdown(wait=True)
 
