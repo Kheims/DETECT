@@ -1025,6 +1025,12 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
     elif architecture == "graphsage":
         arch_kwargs["aggregation"] = aggregation
 
+    # Detect graph-level features if present in dataset
+    num_graph_features = 0
+    sample_graph_x = getattr(dataset[0], "graph_x", None)
+    if sample_graph_x is not None:
+        num_graph_features = sample_graph_x.shape[0]
+
     model = get_model(
         architecture,
         num_node_types=num_node_types,
@@ -1035,6 +1041,7 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         num_labels=num_labels,
         dropout=dropout,
         num_layers=num_layers,
+        num_graph_features=num_graph_features,
         use_type_features=use_type_features,
         use_numeric_features=use_numeric_features,
         use_token_features=use_token_features,
