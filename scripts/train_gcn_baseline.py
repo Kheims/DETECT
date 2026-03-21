@@ -1048,6 +1048,30 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         **arch_kwargs,
     ).to(device)
 
+    pretrained_weights = cfg.get("pretrained_weights")
+    if pretrained_weights is not None:
+        ckpt_path = Path(str(pretrained_weights))
+        if ckpt_path.exists():
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+            encoder_state = ckpt.get("encoder_state_dict", {})
+            # Filter out classifier head and prediction head keys
+            encoder_keys = {
+                k: v for k, v in encoder_state.items()
+                if not k.startswith("lin1") and not k.startswith("lin2")
+                and not k.startswith("predict_head")
+            }
+            # Handle type_emb size mismatch (pre-training has +1 MASK token)
+            pretrain_emb = encoder_keys.get("type_emb.weight")
+            if pretrain_emb is not None:
+                model_emb_size = model.type_emb.weight.shape[0]
+                if pretrain_emb.shape[0] != model_emb_size:
+                    encoder_keys["type_emb.weight"] = pretrain_emb[:model_emb_size]
+            missing, unexpected = model.load_state_dict(encoder_keys, strict=False)
+            print(f"[pretrain] loaded encoder weights from {ckpt_path}")
+            print(f"  loaded: {len(encoder_keys)} keys, missing: {len(missing)}, unexpected: {len(unexpected)}")
+        else:
+            print(f"[pretrain] WARNING: pretrained weights not found at {ckpt_path}")
+
     lr = float(cfg.get("lr", 0.0005))
     weight_decay = float(cfg.get("weight_decay", 5e-5))
     optimizer = torch.optim.AdamW(
