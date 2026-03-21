@@ -95,7 +95,19 @@ def main() -> None:
             cmd += ["--limit", str(limit)]
 
         run_stage("construction", cmd)
-    else:
+
+    if not manifest_path.exists():
+        print(f"[pretrain-pipeline] ERROR: manifest not found at {manifest_path}")
+        sys.exit(1)
+
+    manifest_lines = sum(1 for line in open(manifest_path) if '"success"' in line)
+    if manifest_lines == 0:
+        print(f"[pretrain-pipeline] ERROR: no successful DOT files in manifest. "
+              f"Check that {corpus_cfg.get('input_dir')} contains .java files on this machine.")
+        sys.exit(1)
+    print(f"[pretrain-pipeline] construction: {manifest_lines} successful DOT files")
+
+    if args.skip_construction:
         print("[pretrain-pipeline] skipping construction (--skip-construction)")
 
     # Stage 2: Dataset (DOT → PyG Data, no labels)
@@ -118,7 +130,12 @@ def main() -> None:
             cmd += ["--max-graphs", str(max_graphs)]
 
         run_stage("dataset", cmd)
-    else:
+
+    if not dataset_path.exists():
+        print(f"[pretrain-pipeline] ERROR: dataset not found at {dataset_path}")
+        sys.exit(1)
+
+    if args.skip_dataset:
         print("[pretrain-pipeline] skipping dataset (--skip-dataset)")
 
     # Stage 3: Pre-training (node type masking)
