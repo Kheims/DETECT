@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import sys
 import time
@@ -517,21 +517,15 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
 
     print(f"[from-dir] processing {len(tasks)} files with {args.workers} workers...")
 
-    if args.workers <= 1:
-        records_iter: Any = (_process_dir_task(task) for task in tasks)
-    else:
-        executor = ProcessPoolExecutor(max_workers=args.workers)
-        records_iter = executor.map(_process_dir_task, tasks, chunksize=args.chunksize)
-
     pbar = None
     if tqdm is not None:
         pbar = tqdm(total=len(tasks), desc="from-dir", unit="file")
 
-    with args.manifest_path.open("w") as manifest_fh:
-        try:
-            for processed, record in enumerate(records_iter, start=1):
+    if args.workers <= 1:
+        with args.manifest_path.open("w") as manifest_fh:
+            for task in tasks:
+                record = _process_dir_task(task)
                 _write_manifest_line(manifest_fh, record)
-
                 status = record.get("status")
                 if status == "success":
                     success += 1
@@ -539,20 +533,41 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
                     failed += 1
                 elif status == "skipped":
                     skipped += 1
-
                 if pbar is not None:
                     pbar.set_postfix(ok=success, fail=failed, skip=skipped)
                     pbar.update(1)
-                elif processed % args.progress_every == 0 or processed == len(tasks):
-                    print(
-                        f"[from-dir] processed={processed}/{len(subset)} "
-                        f"success={success} failed={failed} skipped={skipped}"
-                    )
-        finally:
-            if pbar is not None:
-                pbar.close()
-            if executor is not None:
+    else:
+        executor = ProcessPoolExecutor(max_workers=args.workers)
+        futures = {executor.submit(_process_dir_task, task): task for task in tasks}
+
+        with args.manifest_path.open("w") as manifest_fh:
+            try:
+                for future in as_completed(futures):
+                    record = future.result()
+                    _write_manifest_line(manifest_fh, record)
+
+                    status = record.get("status")
+                    if status == "success":
+                        success += 1
+                    elif status == "failed":
+                        failed += 1
+                    elif status == "skipped":
+                        skipped += 1
+
+                    processed = success + failed + skipped
+                    if pbar is not None:
+                        pbar.set_postfix(ok=success, fail=failed, skip=skipped)
+                        pbar.update(1)
+                    elif processed % args.progress_every == 0 or processed == len(tasks):
+                        print(
+                            f"[from-dir] processed={processed}/{len(subset)} "
+                            f"success={success} failed={failed} skipped={skipped}"
+                        )
+            finally:
                 executor.shutdown(wait=True)
+
+    if pbar is not None:
+        pbar.close()
 
     summary = {
         "mode": "from-dir",
