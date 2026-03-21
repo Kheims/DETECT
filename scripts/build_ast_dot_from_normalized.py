@@ -421,9 +421,22 @@ def _dir_comment(input_rel_path: Path) -> str:
     return f"source=directory_file relative_path={input_rel_path.as_posix()}"
 
 
-def _list_java_files(input_dir: Path) -> list[Path]:
-    paths = [path for path in input_dir.rglob("*.java") if path.is_file()]
+MAX_FILE_BYTES = 100_000  # skip Java files > 100KB (~2000 lines)
+
+
+def _list_java_files(input_dir: Path, max_bytes: int = MAX_FILE_BYTES) -> list[Path]:
+    paths = []
+    skipped = 0
+    for path in input_dir.rglob("*.java"):
+        if not path.is_file():
+            continue
+        if max_bytes > 0 and path.stat().st_size > max_bytes:
+            skipped += 1
+            continue
+        paths.append(path)
     paths.sort(key=lambda path: path.as_posix())
+    if skipped:
+        print(f"[from-dir] skipped {skipped} files > {max_bytes // 1000}KB")
     return paths
 
 
