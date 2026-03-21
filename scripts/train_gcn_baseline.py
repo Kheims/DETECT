@@ -1029,7 +1029,7 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
     num_graph_features = 0
     sample_graph_x = getattr(dataset[0], "graph_x", None)
     if sample_graph_x is not None:
-        num_graph_features = sample_graph_x.shape[0]
+        num_graph_features = sample_graph_x.shape[-1]
 
     model = get_model(
         architecture,
