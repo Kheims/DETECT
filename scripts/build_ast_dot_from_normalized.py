@@ -469,7 +469,9 @@ def _process_dir_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
+    print(f"[from-dir] scanning {args.input_dir} for .java files...")
     java_files = _list_java_files(args.input_dir)
+    print(f"[from-dir] found {len(java_files)} Java files")
     subset = java_files if args.limit is None else java_files[: args.limit]
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -494,6 +496,8 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
     skipped = 0
 
     executor: ProcessPoolExecutor | None = None
+
+    print(f"[from-dir] processing {len(tasks)} files with {args.workers} workers...")
 
     if args.workers <= 1:
         records_iter: Any = (_process_dir_task(task) for task in tasks)
