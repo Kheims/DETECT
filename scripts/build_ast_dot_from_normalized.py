@@ -525,9 +525,7 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
 
     pbar = None
     if tqdm is not None:
-        pbar = tqdm(total=len(tasks), desc="from-dir", unit="file",
-                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] ok={postfix[ok]} fail={postfix[fail]}",
-                    postfix={"ok": 0, "fail": 0})
+        pbar = tqdm(total=len(tasks), desc="from-dir", unit="file")
 
     with args.manifest_path.open("w") as manifest_fh:
         try:
@@ -543,8 +541,7 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
                     skipped += 1
 
                 if pbar is not None:
-                    pbar.postfix["ok"] = success
-                    pbar.postfix["fail"] = failed
+                    pbar.set_postfix(ok=success, fail=failed, skip=skipped)
                     pbar.update(1)
                 elif processed % args.progress_every == 0 or processed == len(tasks):
                     print(
