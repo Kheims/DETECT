@@ -37,6 +37,7 @@ from typing import Any, Callable
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch_geometric.loader import DataLoader
 
 
@@ -276,6 +277,7 @@ class Trainer:
         no_improve: int = 0
         stopped_early: bool = False
         history: list[dict[str, float]] = []
+        scheduler = CosineAnnealingLR(self.optimizer, T_max=self.epochs)
 
         for epoch in range(1, self.epochs + 1):
             train_loader = train_loader_fn(epoch)
@@ -328,6 +330,8 @@ class Trainer:
 
             if entry["val_f1_macro"] < 0.05 and epoch > 5:
                 print(f"  [warn] val_f1_macro={entry['val_f1_macro']:.4f} very low -- possible label collapse")
+
+            scheduler.step()
 
             val_metric = float(val_metrics[metric_key])
             improved = (val_metric - best_metric) > self.min_delta
