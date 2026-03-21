@@ -1347,6 +1347,7 @@ class PipelineRunner:
             "early_stopping_metric": str(stage_cfg.get("early_stopping_metric", "macro_f1")),
             "early_stopping_min_delta": float(stage_cfg.get("early_stopping_min_delta", 0.0)),
             "max_graphs": stage_cfg.get("max_graphs"),
+            "pretrained_weights": stage_cfg.get("pretrained_weights"),
         }
 
         if token_state is not None:

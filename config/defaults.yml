@@ -82,6 +82,8 @@ training:
   # Early stopping configuration
   early_stopping_metric: macro_f1
   early_stopping_min_delta: 0.0
+  # Pre-trained encoder weights (null = train from scratch)
+  pretrained_weights: null
 
 reporting:
   enabled: true
