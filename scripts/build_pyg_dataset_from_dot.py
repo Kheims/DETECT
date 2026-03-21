@@ -555,7 +555,8 @@ def main() -> None:
 
             # Reuse depths from build_features for graph-level features
             depths_for_graph, _ = _compute_tree_features(ordered_nodes, edges_raw)
-            graph_x = compute_graph_level_features(ordered_nodes, depths_for_graph)
+            # unsqueeze to [1, 6] so PyG batching concatenates into [B, 6]
+            graph_x = compute_graph_level_features(ordered_nodes, depths_for_graph).unsqueeze(0)
 
             type_ids = []
             for node_type in node_types:
