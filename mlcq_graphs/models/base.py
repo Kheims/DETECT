@@ -25,6 +25,7 @@ class BaseGraphClassifier(ABC, nn.Module):
         num_labels: int,
         dropout: float,
         num_layers: int = 2,
+        num_graph_features: int = 0,
         use_type_features: bool = True,
         use_numeric_features: bool = True,
         use_token_features: bool = False,
@@ -68,6 +69,7 @@ class BaseGraphClassifier(ABC, nn.Module):
         self.num_labels = num_labels
         self.dropout = dropout
         self.num_layers = num_layers
+        self.num_graph_features = num_graph_features
 
         # Set up type embeddings if enabled
         self.type_emb = nn.Embedding(num_node_types, type_emb_dim) if use_type_features else None
@@ -80,6 +82,13 @@ class BaseGraphClassifier(ABC, nn.Module):
             self.in_dim += num_numeric_feats
         if use_token_features:
             self.in_dim += num_token_feats
+
+        # Shared batch normalization layers (one per GNN layer)
+        self.bns = nn.ModuleList([nn.BatchNorm1d(hidden_dim) for _ in range(num_layers)])
+
+        # Residual projection: in_dim -> hidden_dim for the first layer
+        # (subsequent layers have matching dims so the skip is a plain addition)
+        self.residual_proj = nn.Linear(self.in_dim, hidden_dim) if self.in_dim != hidden_dim else None
 
     def compose_features(self, data: Data) -> torch.Tensor:
         """Extract and concatenate enabled features from PyG Data object.

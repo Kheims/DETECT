@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_geometric.nn import GCNConv, global_mean_pool
+from torch_geometric.nn import GCNConv, global_max_pool, global_mean_pool
 
 from mlcq_graphs.models.base import BaseGraphClassifier
 from mlcq_graphs.models.registry import register_model
@@ -29,25 +29,11 @@ class GCNGraphClassifier(BaseGraphClassifier):
         num_labels: int,
         dropout: float,
         num_layers: int = 2,
+        num_graph_features: int = 0,
         use_type_features: bool = True,
         use_numeric_features: bool = True,
         use_token_features: bool = False,
     ) -> None:
-        """Initialize GCN graph classifier.
-
-        Args:
-            num_node_types: Number of unique node types for embedding
-            type_emb_dim: Dimension of type embeddings
-            num_numeric_feats: Number of numeric node features
-            num_token_feats: Number of token features
-            hidden_dim: Hidden dimension for GCN layers
-            num_labels: Number of output labels
-            dropout: Dropout probability
-            num_layers: Number of GCN layers (default: 2)
-            use_type_features: Whether to use type embeddings
-            use_numeric_features: Whether to use numeric features
-            use_token_features: Whether to use token features
-        """
         super().__init__(
             num_node_types=num_node_types,
             type_emb_dim=type_emb_dim,
@@ -57,41 +43,42 @@ class GCNGraphClassifier(BaseGraphClassifier):
             num_labels=num_labels,
             dropout=dropout,
             num_layers=num_layers,
+            num_graph_features=num_graph_features,
             use_type_features=use_type_features,
             use_numeric_features=use_numeric_features,
             use_token_features=use_token_features,
         )
 
-        # Create GCN layers dynamically
         self.convs = nn.ModuleList()
         self.convs.append(GCNConv(self.in_dim, hidden_dim))
         for _ in range(self.num_layers - 1):
             self.convs.append(GCNConv(hidden_dim, hidden_dim))
 
-        # Classifier head
-        self.lin1 = nn.Linear(hidden_dim, hidden_dim)
+        pool_dim = 2 * num_layers * hidden_dim + num_graph_features
+        self.lin1 = nn.Linear(pool_dim, hidden_dim)
         self.lin2 = nn.Linear(hidden_dim, num_labels)
 
     def forward(self, data: Data) -> torch.Tensor:
-        """Forward pass through GCN.
-
-        Args:
-            data: PyG Data object with node features and edges
-
-        Returns:
-            Logits tensor [batch_size, num_labels]
-        """
-        # Compose features from base class
         x = self.compose_features(data)
+        layer_outputs: list[torch.Tensor] = []
 
-        # Apply GCN layers: conv -> relu -> dropout
-        for conv in self.convs:
+        for i, (conv, bn) in enumerate(zip(self.convs, self.bns)):
+            residual = self.residual_proj(x) if i == 0 and self.residual_proj is not None else x
             x = conv(x, data.edge_index)
+            x = bn(x)
+            x = x + residual
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
+            layer_outputs.append(x)
 
-        # Graph-level pooling and classification
-        g = global_mean_pool(x, data.batch)
+        x_jk = torch.cat(layer_outputs, dim=-1)
+        g = torch.cat([global_mean_pool(x_jk, data.batch), global_max_pool(x_jk, data.batch)], dim=-1)
+
+        graph_x = getattr(data, "graph_x", None)
+        if graph_x is not None:
+            # graph_x is [total_graphs_in_batch, num_graph_features] after batching
+            g = torch.cat([g, graph_x], dim=-1)
+
         g = self.lin1(g)
         g = F.relu(g)
         g = F.dropout(g, p=self.dropout, training=self.training)
