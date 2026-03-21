@@ -1,0 +1,25 @@
+corpus:
+  input_dir: data/pretrain/raw/java-small/training
+  workers: 16
+  chunksize: 4
+  progress_every: 500
+  max_nodes: 15000
+  limit: null
+
+dataset:
+  edge_types: [Child, NextToken]
+
+pretraining:
+  architecture: gcn
+  hidden_dim: 512
+  num_layers: 3
+  type_emb_dim: 128
+  epochs: 50
+  lr: 0.001
+  mask_ratio: 0.15
+  dropout: 0.2
+  batch_size: 64
+  device: auto
+  save_every: 10
+
+artifacts_root: artifacts/pretrain
