@@ -124,6 +124,7 @@ def main() -> None:
             "--node-type-vocab-out", str(vocab_path),
             "--edge-types", edge_types,
             "--max-nodes", str(max_nodes),
+            "--workers", str(corpus_cfg.get("workers", 8)),
             "--progress-every", str(corpus_cfg.get("progress_every", 500)),
         ]
         if max_graphs is not None:
