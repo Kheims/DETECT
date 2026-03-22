@@ -1,0 +1,36 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: ase2026_ablation_v2
+  wandb:
+    enabled: true
+    project: mlcq_graphs
+    tags: [ase2026, ablation, v2, improved-arch]
+
+token_encoder:
+  enabled: true
+  workers: 8
+
+training:
+  # Maximize H100 utilization
+  max_nodes_per_batch: 80000
+  eval_max_nodes_per_batch: 120000
+  gat_max_nodes_per_batch: 50000
+  num_workers: 4
+  pin_memory: true
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46]
+  baseline:
+    training.architecture: gcn
+    training.loss: focal
+    training.feature_mode: type_numeric
+    dataset.edge_types: [Child, NextToken]
+    token_encoder.enabled: true
+  grid:
+    dataset.edge_types: [[Child], [Child, NextToken]]
+    training.architecture: [gcn, gat, graphsage]
+    training.loss: [weighted_bce, focal]
+    training.feature_mode: [type_numeric, type_only]
+    token_encoder.enabled: [true, false]
