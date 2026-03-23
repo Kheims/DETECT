@@ -18,8 +18,8 @@ pretraining:
   lr: 0.001
   mask_ratio: 0.15
   dropout: 0.2
-  batch_size: 64
-  device: auto
+  batch_size: 64  # per-GPU batch size (global = batch_size * num_gpus)
   save_every: 10
+  num_workers: 2
 
 artifacts_root: artifacts/pretrain

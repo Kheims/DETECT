@@ -14,7 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
+import shutil
 import subprocess
 import sys
 import time
@@ -24,6 +24,18 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _detect_gpus() -> int:
+    """Detect available NVIDIA GPUs via nvidia-smi."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return len(out.splitlines())
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return 0
 
 
 def load_config(config_path: Path) -> dict:
@@ -55,6 +67,8 @@ def main() -> None:
                         help="Skip DOT construction (reuse existing).")
     parser.add_argument("--skip-dataset", action="store_true",
                         help="Skip dataset building (reuse existing).")
+    parser.add_argument("--num-gpus", type=int, default=None,
+                        help="Number of GPUs for DDP pre-training. Auto-detected if omitted.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -139,10 +153,36 @@ def main() -> None:
     if args.skip_dataset:
         print("[pretrain-pipeline] skipping dataset (--skip-dataset)")
 
-    # Stage 3: Pre-training (node type masking)
-    cmd = [
-        sys.executable,
-        str(PROJECT_ROOT / "scripts" / "pretrain_node_masking.py"),
+    # Stage 3: Pre-training (node type masking) — DDP or single-GPU
+    num_gpus = args.num_gpus
+    if num_gpus is None:
+        num_gpus = _detect_gpus()
+    use_ddp = num_gpus > 1
+
+    if use_ddp:
+        print(f"[pretrain-pipeline] DDP mode: {num_gpus} GPUs detected")
+        # Find torchrun in the same venv as the current Python
+        torchrun = shutil.which("torchrun")
+        if torchrun is None:
+            # Fallback: try python -m torch.distributed.run
+            torchrun_cmd = [sys.executable, "-m", "torch.distributed.run"]
+        else:
+            torchrun_cmd = [torchrun]
+
+        cmd = [
+            *torchrun_cmd,
+            "--standalone",
+            f"--nproc_per_node={num_gpus}",
+            str(PROJECT_ROOT / "scripts" / "pretrain_node_masking_ddp.py"),
+        ]
+    else:
+        print("[pretrain-pipeline] single-GPU mode")
+        cmd = [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "pretrain_node_masking_ddp.py"),
+        ]
+
+    cmd += [
         "--dataset-path", str(dataset_path),
         "--vocab-path", str(vocab_path),
         "--output-dir", str(checkpoint_dir),
@@ -155,8 +195,8 @@ def main() -> None:
         "--lr", str(pretrain_cfg.get("lr", 0.001)),
         "--mask-ratio", str(pretrain_cfg.get("mask_ratio", 0.15)),
         "--batch-size", str(pretrain_cfg.get("batch_size", 64)),
-        "--device", str(pretrain_cfg.get("device", "auto")),
         "--save-every", str(pretrain_cfg.get("save_every", 10)),
+        "--num-workers", str(pretrain_cfg.get("num_workers", 2)),
     ]
 
     run_stage("pretraining", cmd)
