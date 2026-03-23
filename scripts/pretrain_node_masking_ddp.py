@@ -175,11 +175,13 @@ def main() -> None:
     model = PretrainWrapper(encoder, args.hidden_dim, total_types).to(device)
 
     if is_distributed:
+        # find_unused_parameters=True because the encoder's graph-level pooling
+        # and classifier head are not used in pre-training (node-level only).
         model = DDP(
             model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=False,
+            find_unused_parameters=True,
             gradient_as_bucket_view=True,
         )
 
