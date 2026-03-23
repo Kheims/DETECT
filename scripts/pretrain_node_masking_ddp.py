@@ -242,6 +242,8 @@ def main() -> None:
             logits = model(batch)
 
             # Loss only on masked nodes
+            if mask.sum() == 0:
+                continue
             loss = F.cross_entropy(logits[mask], original_type_ids[mask])
 
             optimizer.zero_grad()
@@ -250,7 +252,11 @@ def main() -> None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
 
-            total_loss += loss.item() * mask.sum().item()
+            batch_loss = loss.item()
+            if not (batch_loss != batch_loss):  # skip NaN
+                total_loss += batch_loss * mask.sum().item()
+            else:
+                total_loss += 0.0  # count masked tokens but don't add NaN loss
             total_masked += mask.sum().item()
             preds = logits[mask].argmax(dim=-1)
             total_correct += (preds == original_type_ids[mask]).sum().item()
