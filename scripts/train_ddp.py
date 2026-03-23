@@ -567,9 +567,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-Thin script that imports all training logic from train_gcn_baseline.py and
-mlcq_graphs.*, adding only DDP orchestration (process group init/cleanup,
-model wrapping, rank-gated I/O).
-
-Launch via torchrun:
