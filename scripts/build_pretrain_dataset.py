@@ -52,6 +52,10 @@ def parse_args() -> argparse.Namespace:
         "--node-type-vocab-out", type=Path,
         default=Path("artifacts/pretrain/dataset/node_type_vocab.json"),
     )
+    parser.add_argument(
+        "--canonical-vocab", type=Path, default=None,
+        help="Path to canonical vocab JSON for static type_id mapping.",
+    )
     parser.add_argument("--edge-types", type=str, default="Child,NextToken")
     parser.add_argument("--max-graphs", type=int, default=None)
     parser.add_argument("--max-nodes", type=int, default=5000)
@@ -148,7 +152,11 @@ def main() -> None:
     ]
 
     dataset: list[Data] = []
-    node_type_vocab: dict[str, int] = {}
+    if args.canonical_vocab is not None and args.canonical_vocab.exists():
+        node_type_vocab: dict[str, int] = json.loads(args.canonical_vocab.read_text())
+        print(f"[pretrain-dataset] loaded canonical vocab: {len(node_type_vocab)} types")
+    else:
+        node_type_vocab: dict[str, int] = {}
     success = 0
     skipped_large = 0
     failed = 0

@@ -61,6 +61,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--aggregation", type=str, default="mean")
     parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--patience", type=int, default=10,
+                        help="Early stopping patience (epochs without val loss improvement).")
+    parser.add_argument("--val-ratio", type=float, default=0.1,
+                        help="Fraction of dataset held out for validation.")
     return parser.parse_args()
 
 
@@ -191,22 +195,36 @@ def main() -> None:
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
     )
 
-    # ── DataLoader with DistributedSampler ────────────────────────────
-    sampler = DistributedSampler(
-        dataset,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=True,
-        seed=seed,
+    # ── Train/val split ─────────────────────────────────────────────
+    n = len(dataset)
+    n_val = max(1, int(n * args.val_ratio))
+    n_train = n - n_val
+    gen = torch.Generator().manual_seed(seed)
+    indices = torch.randperm(n, generator=gen).tolist()
+    train_ds = [dataset[i] for i in indices[:n_train]]
+    val_ds = [dataset[i] for i in indices[n_train:]]
+    if is_main:
+        print(f"[pretrain-ddp] split: {n_train} train, {n_val} val")
+
+    # ── DataLoaders with DistributedSampler ───────────────────────────
+    train_sampler = DistributedSampler(
+        train_ds, num_replicas=world_size, rank=rank, shuffle=True, seed=seed,
     ) if is_distributed else None
 
-    loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=(sampler is None),
-        sampler=sampler,
-        num_workers=args.num_workers,
-        pin_memory=True,
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size,
+        shuffle=(train_sampler is None), sampler=train_sampler,
+        num_workers=args.num_workers, pin_memory=True,
+    )
+
+    val_sampler = DistributedSampler(
+        val_ds, num_replicas=world_size, rank=rank, shuffle=False, seed=seed,
+    ) if is_distributed else None
+
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch_size,
+        shuffle=False, sampler=val_sampler,
+        num_workers=args.num_workers, pin_memory=True,
     )
 
     if is_main:
@@ -214,101 +232,141 @@ def main() -> None:
         print(f"[pretrain-ddp] arch={args.architecture} hidden={args.hidden_dim} "
               f"layers={args.num_layers} mask_ratio={args.mask_ratio}")
         print(f"[pretrain-ddp] epochs={args.epochs} lr={args.lr} "
-              f"batch_size={args.batch_size} (per-GPU)")
+              f"batch_size={args.batch_size} (per-GPU) patience={args.patience}")
         print(f"[pretrain-ddp] global_batch_size={args.batch_size * world_size}")
         print(f"[pretrain-ddp] starting training")
 
-    # ── Training loop ─────────────────────────────────────────────────
-    for epoch in range(1, args.epochs + 1):
+    # ── Helper: run one pass (train or eval) ─────────────────────────
+    def _run_epoch(loader, sampler, train: bool, epoch: int):
         if sampler is not None:
             sampler.set_epoch(epoch)
+        if train:
+            model.train()
+        else:
+            model.eval()
 
-        model.train()
         total_loss = 0.0
         total_masked = 0
         total_correct = 0
         num_batches = 0
-        epoch_start = time.perf_counter()
 
-        for batch in loader:
-            batch = batch.to(device)
+        ctx = torch.no_grad() if not train else torch.enable_grad()
+        with ctx:
+            for batch in loader:
+                batch = batch.to(device)
+                mask = torch.rand(batch.type_id.shape, device=device) < args.mask_ratio
+                if mask.sum() == 0:
+                    continue
+                original_type_ids = batch.type_id.clone()
+                batch.type_id = batch.type_id.clone()
+                batch.type_id[mask] = mask_token_id
 
-            # Mask random node types
-            mask = torch.rand(batch.type_id.shape, device=device) < args.mask_ratio
-            original_type_ids = batch.type_id.clone()
-            batch.type_id = batch.type_id.clone()
-            batch.type_id[mask] = mask_token_id
+                logits = model(batch)
+                loss = F.cross_entropy(logits[mask], original_type_ids[mask])
 
-            logits = model(batch)
+                if train:
+                    optimizer.zero_grad()
+                    loss.backward()
+                    if args.grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    optimizer.step()
 
-            # Loss only on masked nodes
-            if mask.sum() == 0:
-                continue
-            loss = F.cross_entropy(logits[mask], original_type_ids[mask])
+                batch_loss = loss.item()
+                if batch_loss == batch_loss:  # not NaN
+                    total_loss += batch_loss * mask.sum().item()
+                total_masked += mask.sum().item()
+                preds = logits[mask].argmax(dim=-1)
+                total_correct += (preds == original_type_ids[mask]).sum().item()
+                num_batches += 1
 
-            optimizer.zero_grad()
-            loss.backward()
-            if args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            optimizer.step()
-
-            batch_loss = loss.item()
-            if not (batch_loss != batch_loss):  # skip NaN
-                total_loss += batch_loss * mask.sum().item()
-            else:
-                total_loss += 0.0  # count masked tokens but don't add NaN loss
-            total_masked += mask.sum().item()
-            preds = logits[mask].argmax(dim=-1)
-            total_correct += (preds == original_type_ids[mask]).sum().item()
-            num_batches += 1
-
-        # Aggregate metrics across ranks
+        # Aggregate across ranks
         if is_distributed:
-            metrics = torch.tensor(
+            m = torch.tensor(
                 [total_loss, total_masked, total_correct, num_batches],
                 device=device, dtype=torch.float64,
             )
-            dist.all_reduce(metrics, op=dist.ReduceOp.SUM)
-            total_loss = metrics[0].item()
-            total_masked = int(metrics[1].item())
-            total_correct = int(metrics[2].item())
-            num_batches = int(metrics[3].item())
+            dist.all_reduce(m, op=dist.ReduceOp.SUM)
+            total_loss, total_masked = m[0].item(), int(m[1].item())
+            total_correct, num_batches = int(m[2].item()), int(m[3].item())
 
         avg_loss = total_loss / max(total_masked, 1)
         accuracy = total_correct / max(total_masked, 1)
+        return avg_loss, accuracy, num_batches
+
+    # ── Save checkpoint helper ────────────────────────────────────────
+    def _save_ckpt(path, epoch, train_loss, val_loss, val_acc):
+        torch.save({
+            "encoder_state_dict": raw_model.encoder.state_dict(),
+            "architecture": args.architecture,
+            "hidden_dim": args.hidden_dim,
+            "num_layers": args.num_layers,
+            "type_emb_dim": args.type_emb_dim,
+            "num_node_types": num_node_types,
+            "total_types_with_mask": total_types,
+            "node_type_vocab": vocab,
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "val_accuracy": val_acc,
+            "distributed": {
+                "world_size": world_size,
+                "global_batch_size": args.batch_size * world_size,
+            },
+        }, path)
+
+    # ── Training loop with early stopping ─────────────────────────────
+    best_val_loss = float("inf")
+    no_improve = 0
+    best_ckpt_path = args.output_dir / f"pretrained_{args.architecture}_best.pt"
+
+    for epoch in range(1, args.epochs + 1):
+        epoch_start = time.perf_counter()
+
+        train_loss, train_acc, n_batches = _run_epoch(
+            train_loader, train_sampler, train=True, epoch=epoch,
+        )
+        val_loss, val_acc, _ = _run_epoch(
+            val_loader, val_sampler, train=False, epoch=epoch,
+        )
+
         epoch_time = time.perf_counter() - epoch_start
 
         if is_main:
             print(
-                f"Epoch {epoch:03d} | loss={avg_loss:.4f} | "
-                f"acc={accuracy:.4f} | time={epoch_time:.1f}s | "
-                f"batches={num_batches}"
+                f"Epoch {epoch:03d} | train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+                f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} | "
+                f"time={epoch_time:.1f}s | batches={n_batches}"
             )
 
-        # Checkpoint (rank 0 only)
-        if is_main and (epoch % args.save_every == 0 or epoch == args.epochs):
-            ckpt_path = args.output_dir / f"pretrained_{args.architecture}_ep{epoch}.pt"
-            torch.save({
-                "encoder_state_dict": raw_model.encoder.state_dict(),
-                "architecture": args.architecture,
-                "hidden_dim": args.hidden_dim,
-                "num_layers": args.num_layers,
-                "type_emb_dim": args.type_emb_dim,
-                "num_node_types": num_node_types,
-                "total_types_with_mask": total_types,
-                "node_type_vocab": vocab,
-                "epoch": epoch,
-                "loss": avg_loss,
-                "accuracy": accuracy,
-                "distributed": {
-                    "world_size": world_size,
-                    "global_batch_size": args.batch_size * world_size,
-                },
-            }, ckpt_path)
-            print(f"  saved: {ckpt_path}")
+        # Early stopping on val loss
+        improved = val_loss < best_val_loss - 1e-5
+        if improved:
+            best_val_loss = val_loss
+            no_improve = 0
+            if is_main:
+                _save_ckpt(best_ckpt_path, epoch, train_loss, val_loss, val_acc)
+                print(f"  best model saved (val_loss={val_loss:.4f})")
+        else:
+            no_improve += 1
+
+        # Periodic checkpoint
+        if is_main and (epoch % args.save_every == 0):
+            periodic_path = args.output_dir / f"pretrained_{args.architecture}_ep{epoch}.pt"
+            _save_ckpt(periodic_path, epoch, train_loss, val_loss, val_acc)
+
+        if no_improve >= args.patience:
+            if is_main:
+                print(f"Early stopping at epoch {epoch} (no val improvement for {args.patience} epochs)")
+            break
+
+    # Final save if we didn't early stop
+    if is_main and (no_improve < args.patience):
+        final_path = args.output_dir / f"pretrained_{args.architecture}_ep{epoch}.pt"
+        _save_ckpt(final_path, epoch, train_loss, val_loss, val_acc)
+        print(f"  final checkpoint saved: {final_path}")
 
     if is_main:
-        print("[pretrain-ddp] done")
+        print(f"[pretrain-ddp] done. best val_loss={best_val_loss:.4f}")
 
     if is_distributed:
         dist.destroy_process_group()

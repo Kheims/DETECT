@@ -69,6 +69,9 @@ def main() -> None:
                         help="Skip dataset building (reuse existing).")
     parser.add_argument("--num-gpus", type=int, default=None,
                         help="Number of GPUs for DDP pre-training. Auto-detected if omitted.")
+    parser.add_argument("--canonical-vocab", type=Path,
+                        default=PROJECT_ROOT / "config" / "canonical_node_type_vocab.json",
+                        help="Path to canonical node type vocab JSON.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -143,6 +146,8 @@ def main() -> None:
         ]
         if max_graphs is not None:
             cmd += ["--max-graphs", str(max_graphs)]
+        if args.canonical_vocab.exists():
+            cmd += ["--canonical-vocab", str(args.canonical_vocab)]
 
         run_stage("dataset", cmd)
 

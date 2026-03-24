@@ -61,6 +61,14 @@ def parse_args() -> argparse.Namespace:
         help="Output path for node-type vocabulary JSON.",
     )
     parser.add_argument(
+        "--canonical-vocab",
+        type=Path,
+        default=None,
+        help="Path to canonical vocab JSON. If provided, use static vocab "
+             "instead of building dynamically (ensures type_id compatibility "
+             "across datasets).",
+    )
+    parser.add_argument(
         "--metadata-out",
         type=Path,
         default=Path("artifacts/cache/dataset/latest/dataset.meta.json"),
@@ -530,7 +538,11 @@ def main() -> None:
     total_rows = len(rows)
     start_time = time.perf_counter()
     dataset: list[Data] = []
-    node_type_vocab: dict[str, int] = {}
+    if args.canonical_vocab is not None and args.canonical_vocab.exists():
+        node_type_vocab = json.loads(args.canonical_vocab.read_text())
+        print(f"[dataset] loaded canonical vocab: {len(node_type_vocab)} types from {args.canonical_vocab}")
+    else:
+        node_type_vocab = {}
     missing_dot = 0
 
     pbar = None
