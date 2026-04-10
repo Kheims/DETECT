@@ -1,0 +1,25 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: random_forest_metrics_best
+
+construction:
+  enabled: false
+dataset:
+  enabled: false
+  metrics_csv: artifacts/metrics_dataset.csv
+token_encoder:
+  enabled: false
+
+training:
+  enabled: true
+  method: classical_ml
+  model: random_forest
+  cross_validation: true
+  n_folds: 5
+  seeds: [42, 43, 44, 45, 46]
+  threshold_tuning: true
+  model_params:
+    n_estimators: 500
+    max_depth: 10
+    min_samples_split: 2
