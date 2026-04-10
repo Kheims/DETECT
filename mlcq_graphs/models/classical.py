@@ -1,11 +1,12 @@
 """Classical ML models for multi-label code smell detection using OO metrics."""
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.multioutput import MultiOutputClassifier
+from xgboost import XGBClassifier
 
 
 CLASSICAL_MODELS = {
@@ -29,11 +30,13 @@ CLASSICAL_MODELS = {
         )
     ),
     "xgboost": lambda cfg: MultiOutputClassifier(
-        GradientBoostingClassifier(
+        XGBClassifier(
             n_estimators=cfg.get("n_estimators", 100),
             max_depth=cfg.get("max_depth", 5),
             learning_rate=cfg.get("lr", 0.1),
             random_state=cfg.get("seed", 42),
+            n_jobs=-1,
+            eval_metric="logloss",
         )
     ),
     "decision_tree": lambda cfg: MultiOutputClassifier(
