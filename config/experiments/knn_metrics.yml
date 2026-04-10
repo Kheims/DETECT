@@ -1,0 +1,24 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: knn_metrics
+
+construction:
+  enabled: false
+dataset:
+  enabled: false
+  metrics_csv: artifacts/metrics_dataset.csv
+token_encoder:
+  enabled: false
+
+training:
+  enabled: true
+  method: classical_ml
+  model: knn
+  cross_validation: true
+  n_folds: 5
+  seeds: [42, 43, 44, 45, 46]
+  model_params:
+    n_neighbors: 5
+  param_grid:
+    n_neighbors: [3, 5, 10, 20]
