@@ -1,0 +1,27 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: svm_metrics
+
+construction:
+  enabled: false
+dataset:
+  enabled: false
+  metrics_csv: artifacts/metrics_dataset.csv
+token_encoder:
+  enabled: false
+
+training:
+  enabled: true
+  method: classical_ml
+  model: svm
+  cross_validation: true
+  n_folds: 5
+  seeds: [42, 43, 44, 45, 46]
+  threshold_tuning: true
+  model_params:
+    kernel: rbf
+    C: 1.0
+  param_grid:
+    kernel: [rbf, linear]
+    C: [0.1, 1.0, 10.0]
