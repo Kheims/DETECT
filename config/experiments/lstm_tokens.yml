@@ -1,0 +1,29 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: lstm_tokens
+
+construction:
+  enabled: false
+dataset:
+  enabled: false
+  token_dir: artifacts/token_dataset
+token_encoder:
+  enabled: false
+
+training:
+  enabled: true
+  method: sequence_dl
+  model: lstm
+  seed: 42
+  train_ratio: 0.8
+  val_ratio: 0.1
+  epochs: 50
+  patience: 10
+  lr: 0.001
+  batch_size: 32
+  embed_dim: 128
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.3
+  loss: focal
