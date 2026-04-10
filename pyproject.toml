@@ -18,6 +18,7 @@ dependencies = [
     "scrapling[all,fetchers]>=0.4.1",
     "torch>=2.9.1",
     "torch-geometric>=2.7.0",
+    "xgboost>=3.2.0",
 ]
 
 [project.optional-dependencies]
