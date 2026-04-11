@@ -55,9 +55,12 @@ class StageState:
 
 class PipelineRunner:
     STAGE_ORDER: tuple[str, ...] = (
+        "normalization",
         "construction",
+        "metric_extraction",
         "dataset",
         "token_encoder",
+        "token_dataset",
         "training",
         "reporting",
     )
@@ -65,6 +68,8 @@ class PipelineRunner:
     STAGE_RUNTIME_ONLY_KEYS: dict[str, set[str]] = {
         "construction": {"workers", "chunksize", "progress_every", "overwrite"},
         "dataset": {"progress_style", "progress_every", "memory_stats"},
+        "metric_extraction": {"workers", "batch_size"},
+        "token_dataset": {},
     }
 
     def __init__(self, config: dict[str, Any], project_root: Path) -> None:
@@ -122,11 +127,18 @@ class PipelineRunner:
             return None
 
         aliases = {
+            "normalization": "normalization",
+            "normalize": "normalization",
             "construction": "construction",
+            "metric_extraction": "metric_extraction",
+            "metric-extraction": "metric_extraction",
+            "metrics": "metric_extraction",
             "dataset": "dataset",
             "token_encoder": "token_encoder",
             "token-encoder": "token_encoder",
             "tokenencoder": "token_encoder",
+            "token_dataset": "token_dataset",
+            "token-dataset": "token_dataset",
             "training": "training",
             "reporting": "reporting",
         }
@@ -162,6 +174,18 @@ class PipelineRunner:
 
         stages: dict[str, StageState] = {}
 
+        normalization_state = None
+        if bool(config.get("normalization", {}).get("enabled", False)):
+            normalization_state = self._run_stage_with_logs(
+                "normalization",
+                lambda: self._run_normalization(
+                    config,
+                    artifacts_root,
+                    force_stage=("normalization" in forced_stages),
+                ),
+            )
+            stages["normalization"] = normalization_state
+
         construction_state = None
         if bool(config.get("construction", {}).get("enabled", True)):
             construction_state = self._run_stage_with_logs(
@@ -173,6 +197,21 @@ class PipelineRunner:
                 ),
             )
             stages["construction"] = construction_state
+
+        metric_extraction_state = None
+        if bool(config.get("metric_extraction", {}).get("enabled", False)):
+            if normalization_state is None:
+                raise ValueError("Metric extraction stage requires normalization stage output")
+            metric_extraction_state = self._run_stage_with_logs(
+                "metric_extraction",
+                lambda: self._run_metric_extraction(
+                    config,
+                    artifacts_root,
+                    normalization_state,
+                    force_stage=("metric_extraction" in forced_stages),
+                ),
+            )
+            stages["metric_extraction"] = metric_extraction_state
 
         dataset_state = None
         if bool(config.get("dataset", {}).get("enabled", True)):
@@ -204,6 +243,21 @@ class PipelineRunner:
             )
             stages["token_encoder"] = token_state
 
+        token_dataset_state = None
+        if bool(config.get("token_dataset", {}).get("enabled", False)):
+            if normalization_state is None:
+                raise ValueError("Token dataset stage requires normalization stage output")
+            token_dataset_state = self._run_stage_with_logs(
+                "token_dataset",
+                lambda: self._run_token_dataset(
+                    config,
+                    artifacts_root,
+                    normalization_state,
+                    force_stage=("token_dataset" in forced_stages),
+                ),
+            )
+            stages["token_dataset"] = token_dataset_state
+
         # Init W&B before training so the Trainer logs epochs live.
         # Skip if ablation already injected a run via _wandb_run.
         wandb_run = config.get("_wandb_run")
@@ -230,10 +284,16 @@ class PipelineRunner:
 
         training_state = None
         if training_enabled:
-            if dataset_state is None:
-                raise ValueError("Training stage requires dataset stage output")
-            if construction_state is None:
-                raise ValueError("Training stage requires construction stage output")
+            used_method = str(config.get("training", {}).get("used_method", "gnn")).lower()
+            if used_method == "gnn":
+                if dataset_state is None or construction_state is None:
+                    raise ValueError("GNN training requires construction and dataset stages")
+            elif used_method == "classical":
+                if metric_extraction_state is None:
+                    raise ValueError("Classical training requires metric_extraction stage")
+            elif used_method == "sequence":
+                if token_dataset_state is None:
+                    raise ValueError("Sequence training requires token_dataset stage")
             training_state = self._run_stage_with_logs(
                 "training",
                 lambda: self._run_training(
@@ -242,6 +302,8 @@ class PipelineRunner:
                     construction_state=construction_state,
                     dataset_state=dataset_state,
                     token_state=token_state,
+                    metric_extraction_state=metric_extraction_state,
+                    token_dataset_state=token_dataset_state,
                     force_stage=("training" in forced_stages),
                 ),
             )
@@ -249,25 +311,43 @@ class PipelineRunner:
 
         report_state = None
         if bool(config.get("reporting", {}).get("enabled", True)) and training_state is not None:
-            report_state = self._run_stage_with_logs(
-                "reporting",
-                lambda: self._run_reporting(config, training_state),
-            )
-            stages["reporting"] = report_state
+            # reporting currently only supports the GNN training output format
+            # (metrics.json + curves.json). Skip gracefully for classical / sequence.
+            _used_method = str(config.get("training", {}).get("used_method", "gnn")).lower()
+            if _used_method == "gnn":
+                report_state = self._run_stage_with_logs(
+                    "reporting",
+                    lambda: self._run_reporting(config, training_state),
+                )
+                stages["reporting"] = report_state
+            else:
+                print(f"[pipeline] reporting skipped (used_method={_used_method}; GNN-only for now)")
 
         # Log test metrics/figures to live W&B run, then finish it
-        if wandb_run is not None and training_state is not None:
-            self._log_wandb(
-                config=config,
-                training_state=training_state,
-                report_state=report_state,
-                wandb_run=wandb_run,
-            )
-            wandb_run.finish()
-            config.pop("_wandb_run", None)
-        elif wandb_enabled and training_state is not None:
-            # Fallback: no live run (import failed etc.), log post-hoc
-            self._log_wandb(config=config, training_state=training_state, report_state=report_state)
+        # Skip for non-GNN used_method because _log_wandb reads metrics.json format that
+        # is specific to train_gcn_baseline output for now.
+        #TODO : refactor _log_wandb to be more flexible and support classical/sequence outputs, then log for those as well.
+        _used_method = str(config.get("training", {}).get("used_method", "gnn")).lower()
+        if _used_method == "gnn":
+            if wandb_run is not None and training_state is not None:
+                self._log_wandb(
+                    config=config,
+                    training_state=training_state,
+                    report_state=report_state,
+                    wandb_run=wandb_run,
+                )
+                wandb_run.finish()
+                config.pop("_wandb_run", None)
+            elif wandb_enabled and training_state is not None:
+                # Fallback: no live run (import failed etc.), log post-hoc
+                self._log_wandb(config=config, training_state=training_state, report_state=report_state)
+        else:
+            if wandb_run is not None:
+                try:
+                    wandb_run.finish()
+                except Exception:
+                    pass
+                config.pop("_wandb_run", None)
 
         elapsed_total = time.perf_counter() - pipeline_started
         if elapsed_total >= 60:
@@ -969,20 +1049,246 @@ class PipelineRunner:
             outputs=outputs,
         )
 
+    def _run_normalization(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        force_stage: bool,
+    ) -> StageState:
+        """Normalize raw MLCQ reviews into per-sample binarised labels."""
+        stage_cfg = config.get("normalization", {})
+        run_cfg = config.get("run", {})
+
+        input_json_cfg = stage_cfg.get("input_json", "data/MLCQCodeSmellSamples.json")
+        input_json = to_path(self.project_root, input_json_cfg)
+        method = str(stage_cfg.get("method", "median"))
+        rule = str(stage_cfg.get("rule", "default"))
+
+        # Fingerprint includes input file hash so re-runs happen if raw data changes
+        try:
+            stat = input_json.stat()
+            input_hint = f"{stat.st_size}:{int(stat.st_mtime)}"
+        except FileNotFoundError:
+            input_hint = "missing"
+
+        payload = {
+            "stage": "normalization",
+            "method": method,
+            "rule": rule,
+            "input_hint": input_hint,
+            "input_path": str(input_json),
+        }
+        fingerprint = stable_fingerprint(jsonable(payload))
+        stage_dir = artifacts_root / "cache" / "normalization" / fingerprint
+        rule_slug = rule.replace(",", "_")
+        outputs = {
+            "normalized_json_path": str(stage_dir / f"normalized.{rule_slug}.json"),
+        }
+
+        if self._can_reuse(
+            stage_dir,
+            outputs,
+            force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
+        ):
+            return StageState(
+                name="normalization",
+                fingerprint=fingerprint,
+                stage_dir=str(stage_dir),
+                reused=True,
+                outputs=outputs,
+            )
+
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        from scripts.NormalizeFromJson import normalize_json_to_json
+
+        normalize_json_to_json(
+            input_json=input_json,
+            output_json=Path(outputs["normalized_json_path"]),
+            method=method,
+            rule=rule,
+        )
+
+        self._write_stage_meta(
+            stage_dir=stage_dir,
+            payload=payload,
+            outputs=outputs,
+        )
+        return StageState(
+            name="normalization",
+            fingerprint=fingerprint,
+            stage_dir=str(stage_dir),
+            reused=False,
+            outputs=outputs,
+        )
+
+    def _run_metric_extraction(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        normalization_state: StageState,
+        force_stage: bool,
+    ) -> StageState:
+        """Extract OO metrics from code snippets via DesigniteJava."""
+        stage_cfg = config.get("metric_extraction", {})
+        run_cfg = config.get("run", {})
+        tool = str(stage_cfg.get("tool", "designite"))
+        if tool != "designite":
+            raise ValueError(f"Unsupported metric extraction tool: {tool}")
+
+        fingerprint_cfg = self._config_for_fingerprint("metric_extraction", stage_cfg)
+        payload = {
+            "stage": "metric_extraction",
+            "config": fingerprint_cfg,
+            "normalization_fingerprint": normalization_state.fingerprint,
+        }
+        fingerprint = stable_fingerprint(jsonable(payload))
+        stage_dir = artifacts_root / "cache" / "metric_extraction" / fingerprint
+        outputs = {
+            "metrics_csv_path": str(stage_dir / "metrics_dataset.csv"),
+        }
+
+        if self._can_reuse(
+            stage_dir,
+            outputs,
+            force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
+        ):
+            return StageState(
+                name="metric_extraction",
+                fingerprint=fingerprint,
+                stage_dir=str(stage_dir),
+                reused=True,
+                outputs=outputs,
+            )
+
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        from scripts.extract_designite_metrics import extract as extract_designite
+
+        extract_designite(
+            input_json=Path(normalization_state.outputs["normalized_json_path"]),
+            output_csv=Path(outputs["metrics_csv_path"]),
+            batch_size=int(stage_cfg.get("batch_size", 500)),
+            workers=int(stage_cfg.get("workers", 6)),
+        )
+
+        self._write_stage_meta(
+            stage_dir=stage_dir,
+            payload=payload,
+            outputs=outputs,
+        )
+        return StageState(
+            name="metric_extraction",
+            fingerprint=fingerprint,
+            stage_dir=str(stage_dir),
+            reused=False,
+            outputs=outputs,
+        )
+
+    def _run_token_dataset(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        normalization_state: StageState,
+        force_stage: bool,
+    ) -> StageState:
+        """Build tokenised sequence dataset from normalised JSON for sequence DL."""
+        stage_cfg = config.get("token_dataset", {})
+        run_cfg = config.get("run", {})
+
+        payload = {
+            "stage": "token_dataset",
+            "config": stage_cfg,
+            "normalization_fingerprint": normalization_state.fingerprint,
+        }
+        fingerprint = stable_fingerprint(jsonable(payload))
+        stage_dir = artifacts_root / "cache" / "token_dataset" / fingerprint
+        outputs = {
+            "token_dir": str(stage_dir),
+            "dataset_path": str(stage_dir / "token_dataset.pt"),
+            "vocab_path": str(stage_dir / "vocab.json"),
+            "metadata_path": str(stage_dir / "meta.json"),
+        }
+
+        if self._can_reuse(
+            stage_dir,
+            outputs,
+            force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
+        ):
+            return StageState(
+                name="token_dataset",
+                fingerprint=fingerprint,
+                stage_dir=str(stage_dir),
+                reused=True,
+                outputs=outputs,
+            )
+
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        from scripts.build_token_dataset import build_token_dataset
+
+        build_token_dataset(
+            input_json=str(Path(normalization_state.outputs["normalized_json_path"])),
+            output_dir=str(stage_dir),
+            max_tokens=int(stage_cfg.get("max_tokens", 512)),
+            min_freq=int(stage_cfg.get("min_freq", 2)),
+            max_vocab=int(stage_cfg.get("max_vocab", 10000)),
+        )
+
+        self._write_stage_meta(
+            stage_dir=stage_dir,
+            payload=payload,
+            outputs=outputs,
+        )
+        return StageState(
+            name="token_dataset",
+            fingerprint=fingerprint,
+            stage_dir=str(stage_dir),
+            reused=False,
+            outputs=outputs,
+        )
+
     def _run_training(
         self,
         config: dict[str, Any],
         artifacts_root: Path,
-        construction_state: StageState,
-        dataset_state: StageState,
+        construction_state: StageState | None,
+        dataset_state: StageState | None,
         token_state: StageState | None,
+        metric_extraction_state: StageState | None,
+        token_dataset_state: StageState | None,
         force_stage: bool,
     ) -> StageState:
         stage_cfg = config.get("training", {})
-        run_cfg = config.get("run", {})
+        used_method = str(stage_cfg.get("used_method", "gnn")).lower()
 
+        if used_method == "classical":
+            return self._run_training_classical(
+                config=config,
+                artifacts_root=artifacts_root,
+                metric_extraction_state=metric_extraction_state,
+                force_stage=force_stage,
+            )
+        if used_method == "sequence":
+            return self._run_training_sequence(
+                config=config,
+                artifacts_root=artifacts_root,
+                token_dataset_state=token_dataset_state,
+                force_stage=force_stage,
+            )
+        if used_method != "gnn":
+            raise ValueError(
+                f"Unsupported training.used_method: {used_method!r}. "
+                f"Expected one of: gnn, classical, sequence."
+            )
+
+        # GNN path (existing behaviour)
+        if construction_state is None:
+            raise ValueError("GNN training requires construction stage output")
+        if dataset_state is None:
+            raise ValueError("GNN training requires dataset stage output")
+
+        run_cfg = config.get("run", {})
         payload = {
             "stage": "training",
+            "used_method": "gnn",
             "config": stage_cfg,
             "dataset_fingerprint": dataset_state.fingerprint,
             "token_encoder_fingerprint": token_state.fingerprint if token_state else None,
@@ -1089,6 +1395,134 @@ class PipelineRunner:
         run_training(train_cfg, wandb_run=wandb_run)
         self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
 
+        return StageState(
+            name="training",
+            fingerprint=fingerprint,
+            stage_dir=str(run_dir),
+            reused=False,
+            outputs=outputs,
+        )
+
+    def _run_training_classical(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        metric_extraction_state: StageState | None,
+        force_stage: bool,
+    ) -> StageState:
+        """Dispatch for training.used_method=classical."""
+        if metric_extraction_state is None:
+            raise ValueError("Classical training requires metric_extraction stage output")
+
+        stage_cfg = config.get("training", {})
+        run_cfg = config.get("run", {})
+
+        payload = {
+            "stage": "training",
+            "used_method": "classical",
+            "config": stage_cfg,
+            "metric_extraction_fingerprint": metric_extraction_state.fingerprint,
+        }
+        fingerprint = stable_fingerprint(jsonable(payload))
+        runs_root = artifacts_root / "runs"
+        run_dir = runs_root / fingerprint
+        model_name = str(stage_cfg.get("model", "random_forest"))
+        outputs = {
+            "run_dir": str(run_dir),
+            "results_path": str(run_dir / f"{model_name}_results.json"),
+        }
+
+        if self._can_reuse(
+            run_dir,
+            outputs,
+            force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
+        ):
+            return StageState(
+                name="training",
+                fingerprint=fingerprint,
+                stage_dir=str(run_dir),
+                reused=True,
+                outputs=outputs,
+            )
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        from scripts.train_classical import run_classical
+
+        if bool(run_cfg.get("print_commands", True)):
+            seeds = stage_cfg.get("seeds", [])
+            print(f"[train] classical in-process  model={model_name} seeds={len(seeds)}")
+
+        run_classical(
+            training_cfg=stage_cfg,
+            metrics_csv=metric_extraction_state.outputs["metrics_csv_path"],
+            output_dir=str(run_dir),
+        )
+
+        self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
+        return StageState(
+            name="training",
+            fingerprint=fingerprint,
+            stage_dir=str(run_dir),
+            reused=False,
+            outputs=outputs,
+        )
+
+    def _run_training_sequence(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        token_dataset_state: StageState | None,
+        force_stage: bool,
+    ) -> StageState:
+        """Dispatch for training.used_method=sequence."""
+        if token_dataset_state is None:
+            raise ValueError("Sequence training requires token_dataset stage output")
+
+        stage_cfg = config.get("training", {})
+        run_cfg = config.get("run", {})
+
+        payload = {
+            "stage": "training",
+            "used_method": "sequence",
+            "config": stage_cfg,
+            "token_dataset_fingerprint": token_dataset_state.fingerprint,
+        }
+        fingerprint = stable_fingerprint(jsonable(payload))
+        runs_root = artifacts_root / "runs"
+        run_dir = runs_root / fingerprint
+        model_name = str(stage_cfg.get("model", "bilstm_attention"))
+        outputs = {
+            "run_dir": str(run_dir),
+            "results_path": str(run_dir / f"{model_name}_results.json"),
+        }
+
+        if self._can_reuse(
+            run_dir,
+            outputs,
+            force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
+        ):
+            return StageState(
+                name="training",
+                fingerprint=fingerprint,
+                stage_dir=str(run_dir),
+                reused=True,
+                outputs=outputs,
+            )
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        from scripts.train_sequence import run_sequence
+
+        if bool(run_cfg.get("print_commands", True)):
+            seeds = stage_cfg.get("seeds", [])
+            print(f"[train] sequence in-process  model={model_name} seeds={len(seeds)}")
+
+        run_sequence(
+            training_cfg=stage_cfg,
+            token_dir=token_dataset_state.outputs["token_dir"],
+            output_dir=str(run_dir),
+        )
+
+        self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
         return StageState(
             name="training",
             fingerprint=fingerprint,
