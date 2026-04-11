@@ -1,0 +1,45 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: classical_rf_pipeline
+  artifacts_root: artifacts
+
+normalization:
+  enabled: true
+  input_json: data/MLCQCodeSmellSamples.json
+  method: median
+  rule: default
+
+construction:
+  enabled: false
+
+metric_extraction:
+  enabled: true
+  tool: designite
+  batch_size: 500
+  workers: 6
+
+dataset:
+  enabled: false
+
+token_encoder:
+  enabled: false
+
+token_dataset:
+  enabled: false
+
+training:
+  enabled: true
+  used_method: classical
+  model: random_forest
+  cross_validation: true
+  n_folds: 5
+  seeds: [42, 43, 44, 45, 46]
+  threshold_tuning: true
+  model_params:
+    n_estimators: 200
+    max_depth: 10
+    min_samples_split: 2
+  param_grid:
+    n_estimators: [100, 200, 500]
+    max_depth: [null, 10, 20, 30]
