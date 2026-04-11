@@ -189,30 +189,29 @@ def expand_param_grid(grid):
     return combos
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    args, remaining = parser.parse_known_args()
+def run_classical(
+    training_cfg: dict,
+    metrics_csv: str,
+    output_dir: str,
+    run_name: str | None = None,
+) -> dict:
+    """Run classical ML training from a training config and metrics CSV.
 
-    overrides = parse_cli_overrides(remaining)
-    cfg = load_config(Path(args.config), overrides)
-    training_cfg = cfg.get("training", {})
+    Importable entry point for pipeline orchestration.
+
+    Returns a dict with keys: model, seeds, best, all_combos, results_path.
+    """
     model_name = training_cfg.get("model", "random_forest")
-    metrics_csv = cfg.get("dataset", {}).get("metrics_csv", "artifacts/metrics_dataset.csv")
 
-    # Multi-run config
     seeds = training_cfg.get("seeds", [42, 43, 44, 45, 46])
     n_folds = training_cfg.get("n_folds", 5)
     use_cv = training_cfg.get("cross_validation", True)
     use_threshold_tuning = training_cfg.get("threshold_tuning", True)
-
-    # Hyperparameter grid
     param_grid = training_cfg.get("param_grid", None)
 
     print(f"Loading metrics dataset from {metrics_csv}...")
     X, y, feature_names = load_metrics_dataset(metrics_csv)
-    # Safety check for NaN/Inf
+
     nan_mask = np.isnan(X) | np.isinf(X)
     if nan_mask.any():
         nan_count = nan_mask.sum()
@@ -224,7 +223,6 @@ def main():
     print(f"Dataset: {X.shape[0]} samples, {X.shape[1]} features, {y.shape[1]} labels")
     print(f"Label distribution: {dict(zip(LABEL_NAMES, y.sum(axis=0).astype(int).tolist()))}")
 
-    # Expand grid
     if param_grid:
         param_combos = expand_param_grid(param_grid)
         print(f"Hyperparameter grid: {len(param_combos)} combinations")
@@ -248,7 +246,6 @@ def main():
             np.random.seed(seed)
 
             if use_cv:
-                # Stratified K-Fold using label combination hash
                 strat_col = multilabel_stratify_column(y)
                 skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
 
@@ -262,7 +259,6 @@ def main():
                     )
                     fold_results.append(result)
 
-                # Average across folds
                 avg_result = {
                     "f1_macro": np.mean([r["f1_macro"] for r in fold_results]),
                     "f1_micro": np.mean([r["f1_micro"] for r in fold_results]),
@@ -276,7 +272,6 @@ def main():
                     }
                 combo_results.append(avg_result)
             else:
-                # Single train/test split
                 from sklearn.model_selection import train_test_split
                 train_ratio = training_cfg.get("train_ratio", 0.8)
                 X_train, X_test, y_train, y_test = train_test_split(
@@ -302,17 +297,13 @@ def main():
             best_score = score
             best_combo = {"params": params, "results": agg}
 
-    # Report best
     if len(param_combos) > 1:
         print(f"\n=== Best configuration ===")
         print(f"Params: {best_combo['params']}")
         agg = best_combo["results"]
         print(f"F1-macro: {agg['f1_macro']['mean']:.4f} ± {agg['f1_macro']['std']:.4f}")
 
-    # Save
-    output_dir = cfg.get("run", {}).get("artifacts_root", "artifacts")
     os.makedirs(output_dir, exist_ok=True)
-
     save_data = {
         "model": model_name,
         "seeds": seeds,
@@ -321,10 +312,33 @@ def main():
         "best": best_combo,
         "all_combos": all_combo_results,
     }
-    results_path = os.path.join(output_dir, f"{model_name}_results.json")
+    filename = f"{run_name}.json" if run_name else f"{model_name}_results.json"
+    results_path = os.path.join(output_dir, filename)
     with open(results_path, "w") as f:
         json.dump(save_data, f, indent=2, default=str)
     print(f"\nResults saved to {results_path}")
+
+    save_data["results_path"] = results_path
+    return save_data
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    args, remaining = parser.parse_known_args()
+
+    overrides = parse_cli_overrides(remaining)
+    cfg = load_config(Path(args.config), overrides)
+    training_cfg = cfg.get("training", {})
+    metrics_csv = cfg.get("dataset", {}).get("metrics_csv", "artifacts/metrics_dataset.csv")
+    output_dir = cfg.get("run", {}).get("artifacts_root", "artifacts")
+
+    run_classical(
+        training_cfg=training_cfg,
+        metrics_csv=metrics_csv,
+        output_dir=output_dir,
+    )
 
 
 if __name__ == "__main__":

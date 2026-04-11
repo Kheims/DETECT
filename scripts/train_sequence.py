@@ -178,16 +178,18 @@ def run_single_seed(seed, dataset, meta, training_cfg, device):
     return test_results
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    args, remaining = parser.parse_known_args()
+def run_sequence(
+    training_cfg: dict,
+    token_dir: str,
+    output_dir: str,
+    run_name: str | None = None,
+) -> dict:
+    """Run sequence DL training from a training config and token dataset dir.
 
-    overrides = parse_cli_overrides(remaining)
-    cfg = load_config(Path(args.config), overrides)
-    training_cfg = cfg.get("training", {})
+    Importable entry point for pipeline orchestration.
 
+    Returns a dict with per-seed results and aggregated metrics.
+    """
     device = training_cfg.get("device", "auto")
     if device == "auto":
         if torch.cuda.is_available():
@@ -201,15 +203,12 @@ def main():
     seeds = training_cfg.get("seeds", [42, 43, 44, 45, 46])
     model_name = training_cfg.get("model", "bilstm_attention")
 
-    # Load dataset once
-    token_dir = cfg.get("dataset", {}).get("token_dir", "artifacts/token_dataset")
     print(f"Loading token dataset from {token_dir}...")
     dataset = torch.load(os.path.join(token_dir, "token_dataset.pt"), weights_only=False)
     with open(os.path.join(token_dir, "meta.json"), "r") as f:
         meta = json.load(f)
     print(f"Dataset: {len(dataset)} samples, vocab: {meta['vocab_size']}")
 
-    # Run each seed
     all_results = []
     for seed in seeds:
         print(f"\n--- Seed {seed} ---")
@@ -221,7 +220,6 @@ def main():
             pl = result["per_label"].get(name, {})
             print(f"  {name}: F1={pl.get('f1', 0):.4f}, MCC={pl.get('mcc', 0):.4f}")
 
-    # Aggregate
     print(f"\n=== Aggregated ({len(seeds)} seeds) ===")
     for metric in ["f1_macro", "mcc_macro"]:
         values = [r.get(metric, 0) for r in all_results]
@@ -231,25 +229,65 @@ def main():
         mccs = [r["per_label"][name].get("mcc", 0) for r in all_results]
         print(f"  {name}: F1={np.mean(f1s):.4f}±{np.std(f1s):.4f}, MCC={np.mean(mccs):.4f}±{np.std(mccs):.4f}")
 
-    # Save
-    output_dir = cfg.get("run", {}).get("artifacts_root", "artifacts")
     os.makedirs(output_dir, exist_ok=True)
+
+    aggregated = {
+        "f1_macro": {
+            "mean": float(np.mean([r["f1_macro"] for r in all_results])),
+            "std": float(np.std([r["f1_macro"] for r in all_results])),
+        },
+        "mcc_macro": {
+            "mean": float(np.mean([r.get("mcc_macro", 0) for r in all_results])),
+            "std": float(np.std([r.get("mcc_macro", 0) for r in all_results])),
+        },
+        "per_label": {},
+    }
+    for name in LABEL_NAMES:
+        aggregated["per_label"][name] = {
+            "f1": {
+                "mean": float(np.mean([r["per_label"][name].get("f1", 0) for r in all_results])),
+                "std": float(np.std([r["per_label"][name].get("f1", 0) for r in all_results])),
+            },
+            "mcc": {
+                "mean": float(np.mean([r["per_label"][name].get("mcc", 0) for r in all_results])),
+                "std": float(np.std([r["per_label"][name].get("mcc", 0) for r in all_results])),
+            },
+        }
+
     save_data = {
         "model": model_name,
         "seeds": seeds,
         "device": device,
         "per_seed": all_results,
-        "aggregated": {
-            "f1_macro": {"mean": float(np.mean([r["f1_macro"] for r in all_results])),
-                         "std": float(np.std([r["f1_macro"] for r in all_results]))},
-            "mcc_macro": {"mean": float(np.mean([r.get("mcc_macro", 0) for r in all_results])),
-                          "std": float(np.std([r.get("mcc_macro", 0) for r in all_results]))},
-        }
+        "aggregated": aggregated,
     }
-    results_path = os.path.join(output_dir, f"{model_name}_results.json")
+    filename = f"{run_name}.json" if run_name else f"{model_name}_results.json"
+    results_path = os.path.join(output_dir, filename)
     with open(results_path, "w") as f:
         json.dump(save_data, f, indent=2, default=str)
     print(f"\nResults saved to {results_path}")
+
+    save_data["results_path"] = results_path
+    return save_data
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    args, remaining = parser.parse_known_args()
+
+    overrides = parse_cli_overrides(remaining)
+    cfg = load_config(Path(args.config), overrides)
+    training_cfg = cfg.get("training", {})
+    token_dir = cfg.get("dataset", {}).get("token_dir", "artifacts/token_dataset")
+    output_dir = cfg.get("run", {}).get("artifacts_root", "artifacts")
+
+    run_sequence(
+        training_cfg=training_cfg,
+        token_dir=token_dir,
+        output_dir=output_dir,
+    )
 
 
 if __name__ == "__main__":
