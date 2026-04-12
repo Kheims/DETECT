@@ -38,10 +38,11 @@ Y_ORDER = ["feature envy", "long method", "blob", "data class"]
 
 # Binarization presets: which severity strings count as the positive class.
 RULE_PRESETS: dict[str, set[str]] = {
-    "default": {"minor", "major", "critical"},  # severity != none (legacy behaviour)
-    "ds1":     {"major", "critical"},             # Madeyski DS1
-    "ds2":     {"critical"},                       # Madeyski DS2
-    "strict":  {"critical"},                       # alias of ds2
+    "default":      {"minor", "major", "critical"},  # severity != none
+    "madeyskiDS1":  {"major", "critical"},            # Madeyski & Lewowski IST 2023 DS1
+    "madeyskiDS2":  {"critical"},                     # Madeyski & Lewowski IST 2023 DS2
+    "ds1":          {"major", "critical"},             # alias
+    "ds2":          {"critical"},                      # alias
 }
 
 
