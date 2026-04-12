@@ -1,0 +1,45 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: sequence_codebert_pipeline
+  artifacts_root: artifacts
+
+normalization:
+  enabled: true
+  input_json: data/MLCQCodeSmellSamples.json
+  method: median
+  rule: default
+
+construction:
+  enabled: false
+
+metric_extraction:
+  enabled: false
+
+dataset:
+  enabled: false
+
+token_encoder:
+  enabled: false
+
+token_dataset:
+  enabled: false
+
+training:
+  enabled: true
+  used_method: codebert
+  model: codebert
+  num_labels: 4
+  seeds: [42, 43, 44, 45, 46]
+  device: auto
+  max_length: 256
+  dropout: 0.1
+  batch_size: 16
+  lr: 0.00002
+  weight_decay: 0.01
+  epochs: 10
+  patience: 3
+  loss: focal
+  focal_gamma: 2.0
+  train_ratio: 0.8
+  val_ratio: 0.1
