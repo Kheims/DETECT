@@ -3,7 +3,7 @@
 Usage:
     uv run python scripts/report_runs.py \
         --artifacts-root artifacts \
-        --output-dir /Users/djamel/Repositories/personal/Thesis/survey-paper/img/benchmark
+        --output-dir results
 
 Reads:
   artifacts/runs/<fingerprint>/{model}_results.json  (classical + sequence)
@@ -484,7 +484,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifacts-root", default="artifacts")
     parser.add_argument("--output-dir",
-                        default="/Users/djamel/Repositories/personal/Thesis/survey-paper/img/benchmark/results")
+                        default="results")
     args = parser.parse_args()
 
     artifacts_root = Path(args.artifacts_root).resolve()
