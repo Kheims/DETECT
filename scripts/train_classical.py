@@ -66,9 +66,14 @@ def evaluate_multilabel(y_true, y_pred, y_proba=None):
 
     per_label = {}
     for i, name in enumerate(LABEL_NAMES):
+        tp = int(((y_pred[:, i] == 1) & (y_true[:, i] == 1)).sum())
+        fp = int(((y_pred[:, i] == 1) & (y_true[:, i] == 0)).sum())
+        fn = int(((y_pred[:, i] == 0) & (y_true[:, i] == 1)).sum())
+        tn = int(((y_pred[:, i] == 0) & (y_true[:, i] == 0)).sum())
         label_metrics = {
             "f1": f1_score(y_true[:, i], y_pred[:, i], zero_division=0),
             "mcc": matthews_corrcoef(y_true[:, i], y_pred[:, i]) if y_true[:, i].sum() > 0 else 0.0,
+            "tp": tp, "fp": fp, "fn": fn, "tn": tn,
         }
         if y_proba is not None and y_true[:, i].sum() > 0:
             try:
