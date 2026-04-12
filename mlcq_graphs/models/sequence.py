@@ -50,6 +50,29 @@ class BiLSTMAttentionClassifier(nn.Module):
         return self.fc(self.dropout(context))
 
 
+class GRUClassifier(nn.Module):
+    def __init__(self, vocab_size, embed_dim, hidden_dim, num_labels, num_layers=1, dropout=0.3, bidirectional=False):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.gru = nn.GRU(
+            embed_dim, hidden_dim, num_layers=num_layers,
+            batch_first=True, dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional,
+        )
+        direction_factor = 2 if bidirectional else 1
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_dim * direction_factor, num_labels)
+
+    def forward(self, x):
+        emb = self.dropout(self.embedding(x))
+        output, hidden = self.gru(emb)
+        if self.gru.bidirectional:
+            hidden = torch.cat([hidden[-2], hidden[-1]], dim=1)
+        else:
+            hidden = hidden[-1]
+        return self.fc(self.dropout(hidden))
+
+
 class CNNClassifier(nn.Module):
     def __init__(self, vocab_size, embed_dim, num_labels, num_filters=128, filter_sizes=(3, 4, 5), dropout=0.3):
         super().__init__()
@@ -67,11 +90,30 @@ class CNNClassifier(nn.Module):
         return self.fc(self.dropout(cat))
 
 
+class CodeBERTClassifier(nn.Module):
+    """Fine-tunes microsoft/codebert-base for multi-label classification."""
+
+    def __init__(self, num_labels=4, dropout=0.3, model_name="microsoft/codebert-base"):
+        super().__init__()
+        from transformers import AutoModel
+        self.encoder = AutoModel.from_pretrained(model_name)
+        hidden_size = self.encoder.config.hidden_size  # 768
+        self.dropout = nn.Dropout(dropout)
+        self.classifier = nn.Linear(hidden_size, num_labels)
+
+    def forward(self, input_ids, attention_mask=None):
+        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        cls_output = outputs.last_hidden_state[:, 0, :]  # [CLS] token
+        return self.classifier(self.dropout(cls_output))
+
+
 SEQUENCE_MODELS = {
     "lstm": LSTMClassifier,
     "bilstm": lambda **kw: LSTMClassifier(bidirectional=True, **kw),
     "bilstm_attention": BiLSTMAttentionClassifier,
+    "gru": GRUClassifier,
     "cnn": CNNClassifier,
+    "codebert": CodeBERTClassifier,
 }
 
 
@@ -101,4 +143,6 @@ def build_sequence_model(model_name, cfg):
         }
         if model_name == "bilstm":
             return LSTMClassifier(bidirectional=True, **kw)
+        if model_name == "gru":
+            return GRUClassifier(**kw)
         return SEQUENCE_MODELS[model_name](**kw)

@@ -5,6 +5,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.naive_bayes import GaussianNB
 from sklearn.multioutput import MultiOutputClassifier
 from xgboost import XGBClassifier
 
@@ -45,6 +47,27 @@ CLASSICAL_MODELS = {
             class_weight="balanced",
             random_state=cfg.get("seed", 42),
         )
+    ),
+    "j48": lambda cfg: MultiOutputClassifier(
+        DecisionTreeClassifier(
+            criterion="entropy",
+            max_depth=cfg.get("max_depth", None),
+            min_samples_leaf=cfg.get("min_samples_leaf", 2),
+            class_weight="balanced",
+            random_state=cfg.get("seed", 42),
+        )
+    ),
+    "mlp": lambda cfg: MultiOutputClassifier(
+        MLPClassifier(
+            hidden_layer_sizes=tuple(cfg.get("hidden_layer_sizes", [100])),
+            activation=cfg.get("activation", "relu"),
+            max_iter=cfg.get("max_iter", 500),
+            early_stopping=True,
+            random_state=cfg.get("seed", 42),
+        )
+    ),
+    "naive_bayes": lambda cfg: MultiOutputClassifier(
+        GaussianNB()
     ),
     "knn": lambda cfg: MultiOutputClassifier(
         KNeighborsClassifier(

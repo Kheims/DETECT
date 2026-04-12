@@ -1,0 +1,45 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: classical_mlp_pipeline
+  artifacts_root: artifacts
+
+normalization:
+  enabled: true
+  input_json: data/MLCQCodeSmellSamples.json
+  method: median
+  rule: default
+
+construction:
+  enabled: false
+
+metric_extraction:
+  enabled: true
+  tool: designite
+  batch_size: 500
+  workers: 6
+
+dataset:
+  enabled: false
+
+token_encoder:
+  enabled: false
+
+token_dataset:
+  enabled: false
+
+training:
+  enabled: true
+  used_method: classical
+  model: mlp
+  cross_validation: true
+  n_folds: 5
+  seeds: [42, 43, 44, 45, 46]
+  threshold_tuning: true
+  model_params:
+    hidden_layer_sizes: [100]
+    activation: relu
+    max_iter: 500
+  param_grid:
+    hidden_layer_sizes: [[100], [100, 50], [200]]
+    activation: [relu, tanh]

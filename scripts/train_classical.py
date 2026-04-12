@@ -178,11 +178,16 @@ def aggregate_results(all_results):
     agg["per_label"] = {}
     for name in LABEL_NAMES:
         label_agg = {}
-        for metric in ["f1", "mcc", "pr_auc"]:
+        for metric in ["f1", "mcc", "pr_auc", "precision", "recall", "roc_auc"]:
             values = [r["per_label"][name].get(metric, 0) for r in all_results
                       if name in r.get("per_label", {})]
             if values:
                 label_agg[metric] = {"mean": np.mean(values), "std": np.std(values)}
+        for count_metric in ["tp", "fp", "fn", "tn"]:
+            values = [r["per_label"][name].get(count_metric, 0) for r in all_results
+                      if name in r.get("per_label", {})]
+            if values:
+                label_agg[count_metric] = int(sum(values))
         agg["per_label"][name] = label_agg
 
     return agg
@@ -274,12 +279,21 @@ def run_classical(
                     "f1_macro": np.mean([r["f1_macro"] for r in fold_results]),
                     "f1_micro": np.mean([r["f1_micro"] for r in fold_results]),
                     "mcc_macro": np.mean([r["mcc_macro"] for r in fold_results]),
+                    "pr_auc_macro": np.mean([r.get("pr_auc_macro", 0) for r in fold_results]),
                     "per_label": {},
                 }
                 for name in LABEL_NAMES:
                     avg_result["per_label"][name] = {
                         "f1": np.mean([r["per_label"][name]["f1"] for r in fold_results]),
                         "mcc": np.mean([r["per_label"][name]["mcc"] for r in fold_results]),
+                        "precision": float(np.mean([r["per_label"][name]["precision"] for r in fold_results])),
+                        "recall": float(np.mean([r["per_label"][name]["recall"] for r in fold_results])),
+                        "pr_auc": float(np.mean([r["per_label"][name].get("pr_auc", 0) for r in fold_results])),
+                        "roc_auc": float(np.mean([r["per_label"][name].get("roc_auc", 0) for r in fold_results])),
+                        "tp": int(sum(r["per_label"][name]["tp"] for r in fold_results)),
+                        "fp": int(sum(r["per_label"][name]["fp"] for r in fold_results)),
+                        "fn": int(sum(r["per_label"][name]["fn"] for r in fold_results)),
+                        "tn": int(sum(r["per_label"][name]["tn"] for r in fold_results)),
                     }
                 combo_results.append(avg_result)
             else:
