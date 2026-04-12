@@ -17,7 +17,7 @@ training:
   model: decision_tree
   cross_validation: true
   n_folds: 5
-  seeds: [42, 43, 44, 45, 46]
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   model_params:
     max_depth: 10
     min_samples_split: 2

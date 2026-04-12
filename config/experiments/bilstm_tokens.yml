@@ -15,7 +15,7 @@ training:
   enabled: true
   method: sequence_dl
   model: bilstm_attention
-  seeds: [42, 43, 44, 45, 46]
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   train_ratio: 0.8
   val_ratio: 0.1
   epochs: 50

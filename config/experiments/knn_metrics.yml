@@ -17,7 +17,7 @@ training:
   model: knn
   cross_validation: true
   n_folds: 5
-  seeds: [42, 43, 44, 45, 46]
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   model_params:
     n_neighbors: 5
   param_grid:

@@ -34,7 +34,7 @@ training:
   model: svm
   cross_validation: true
   n_folds: 5
-  seeds: [42, 43, 44, 45, 46]
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   threshold_tuning: true
   model_params:
     kernel: rbf

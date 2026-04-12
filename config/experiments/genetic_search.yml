@@ -14,7 +14,7 @@ token_encoder:
 training:
   enabled: true
   method: genetic
-  seeds: [42, 43, 44, 45, 46]
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   train_ratio: 0.8
   model_params:
     population_size: 100

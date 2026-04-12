@@ -33,7 +33,7 @@ training:
   used_method: sequence
   model: cnn
   num_labels: 4
-  seeds: [42, 43, 44, 45, 46]
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   device: auto
   embed_dim: 128
   num_filters: 128
