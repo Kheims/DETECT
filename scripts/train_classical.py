@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import f1_score, matthews_corrcoef, precision_recall_curve, auc
+from sklearn.metrics import f1_score, matthews_corrcoef, precision_recall_curve, precision_score, recall_score, roc_auc_score, auc
 
 from mlcq_graphs.config import load_config, parse_cli_overrides
 from mlcq_graphs.models.classical import build_classical_model
@@ -71,6 +71,8 @@ def evaluate_multilabel(y_true, y_pred, y_proba=None):
         fn = int(((y_pred[:, i] == 0) & (y_true[:, i] == 1)).sum())
         tn = int(((y_pred[:, i] == 0) & (y_true[:, i] == 0)).sum())
         label_metrics = {
+            "precision": float(precision_score(y_true[:, i], y_pred[:, i], zero_division=0)),
+            "recall": float(recall_score(y_true[:, i], y_pred[:, i], zero_division=0)),
             "f1": f1_score(y_true[:, i], y_pred[:, i], zero_division=0),
             "mcc": matthews_corrcoef(y_true[:, i], y_pred[:, i]) if y_true[:, i].sum() > 0 else 0.0,
             "tp": tp, "fp": fp, "fn": fn, "tn": tn,
@@ -81,6 +83,10 @@ def evaluate_multilabel(y_true, y_pred, y_proba=None):
                 label_metrics["pr_auc"] = auc(recall_arr, precision_arr)
             except Exception:
                 label_metrics["pr_auc"] = 0.0
+            try:
+                label_metrics["roc_auc"] = float(roc_auc_score(y_true[:, i], y_proba[:, i]))
+            except Exception:
+                label_metrics["roc_auc"] = 0.0
         per_label[name] = label_metrics
 
     results["per_label"] = per_label
