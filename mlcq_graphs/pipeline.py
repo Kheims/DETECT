@@ -304,6 +304,7 @@ class PipelineRunner:
                     token_state=token_state,
                     metric_extraction_state=metric_extraction_state,
                     token_dataset_state=token_dataset_state,
+                    normalization_state=normalization_state,
                     force_stage=("training" in forced_stages),
                 ),
             )
@@ -1254,7 +1255,8 @@ class PipelineRunner:
         token_state: StageState | None,
         metric_extraction_state: StageState | None,
         token_dataset_state: StageState | None,
-        force_stage: bool,
+        normalization_state: StageState | None = None,
+        force_stage: bool = False,
     ) -> StageState:
         stage_cfg = config.get("training", {})
         used_method = str(stage_cfg.get("used_method", "gnn")).lower()
@@ -1273,10 +1275,17 @@ class PipelineRunner:
                 token_dataset_state=token_dataset_state,
                 force_stage=force_stage,
             )
+        if used_method == "codebert":
+            return self._run_training_codebert(
+                config=config,
+                artifacts_root=artifacts_root,
+                normalization_state=normalization_state,
+                force_stage=force_stage,
+            )
         if used_method != "gnn":
             raise ValueError(
                 f"Unsupported training.used_method: {used_method!r}. "
-                f"Expected one of: gnn, classical, sequence."
+                f"Expected one of: gnn, classical, sequence, codebert."
             )
 
         # GNN path (existing behaviour)
@@ -1519,6 +1528,69 @@ class PipelineRunner:
         run_sequence(
             training_cfg=stage_cfg,
             token_dir=token_dataset_state.outputs["token_dir"],
+            output_dir=str(run_dir),
+        )
+
+        self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
+        return StageState(
+            name="training",
+            fingerprint=fingerprint,
+            stage_dir=str(run_dir),
+            reused=False,
+            outputs=outputs,
+        )
+
+    def _run_training_codebert(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        normalization_state: StageState | None,
+        force_stage: bool,
+    ) -> StageState:
+        """Dispatch for training.used_method=codebert."""
+        if normalization_state is None:
+            raise ValueError("CodeBERT training requires normalization stage output")
+
+        stage_cfg = config.get("training", {})
+        run_cfg = config.get("run", {})
+
+        payload = {
+            "stage": "training",
+            "used_method": "codebert",
+            "config": stage_cfg,
+            "normalization_fingerprint": normalization_state.fingerprint,
+        }
+        fingerprint = stable_fingerprint(jsonable(payload))
+        runs_root = artifacts_root / "runs"
+        run_dir = runs_root / fingerprint
+        outputs = {
+            "run_dir": str(run_dir),
+            "results_path": str(run_dir / "codebert_results.json"),
+        }
+
+        if self._can_reuse(
+            run_dir,
+            outputs,
+            force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
+        ):
+            return StageState(
+                name="training",
+                fingerprint=fingerprint,
+                stage_dir=str(run_dir),
+                reused=True,
+                outputs=outputs,
+            )
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        from scripts.train_codebert import run_codebert
+
+        seeds = stage_cfg.get("seeds", [])
+        print(f"[train] codebert in-process  seeds={len(seeds)}")
+
+        normalized_json = normalization_state.outputs["normalized_json_path"]
+        run_codebert(
+            training_cfg=stage_cfg,
+            normalized_json_path=normalized_json,
             output_dir=str(run_dir),
         )
 
