@@ -1,106 +1,99 @@
-# MLCQ-Graphs
+# DETECT
 
-This is the reproduction package for our IST paper on code smell detection. It wraps three model families (classical ML on OO metrics, sequence DL on token sequences, GNNs on AST graphs) behind a single entry point so that preprocessing, label definitions and evaluation are identical across all experiments. Everything is driven by YAML config files.
+**DE**sign defec**T** **E**valuation and **C**lassification **T**oolkit for code smell detection.
 
-The dataset is MLCQ (4366 Java samples, 4 smells). We do not redistribute it; get it from the [original repository](https://github.com/tudo-aqua/MLCQ).
+A unified pipeline that evaluates classical ML, sequence DL and graph neural network models under identical preprocessing, label definitions and evaluation protocols. Three model families, one entry point, YAML-driven configuration.
+
+Currently supports the [MLCQ](https://zenodo.org/records/3666840) dataset. Integration of [DaCoSX](https://github.com/nicedaycode/DaCoSX) and support for alternative binarization protocols (Madeyski DS1/DS2) are ongoing.
 
 ![Pipeline overview](docs/diagrams/pipeline_overview.svg)
 
 ## Setup
 
 ```bash
-git clone <repo-url> && cd mlcq-graphs
+git clone https://github.com/Kheims/DETECT.git && cd DETECT
 uv sync
 ```
 
-You need Python 3.13+, Java 17+ (for DesigniteJava) and [uv](https://docs.astral.sh/uv/). Place the MLCQ JSON at `data/MLCQCodeSmellSamples.json`.
+Requires Python 3.13+, Java 17+ (for DesigniteJava) and [uv](https://docs.astral.sh/uv/).
 
 ## Reproducing the paper results
 
-Each experiment is one command. The pipeline caches intermediate stages (normalization, metric extraction, tokenization) so only the first run per family pays the full cost.
+Each experiment is one command. The pipeline caches intermediate stages so only the first run per family pays the full cost.
 
-### Step 1: Classical ML (5 models, ~25 min total)
+### Classical ML (8 models)
 
 ```bash
-for model in rf svm xgboost dt knn; do
+for model in rf svm xgboost dt knn j48 mlp nb; do
   uv run python main.py --config config/experiments/classical_${model}_pipeline.yml
 done
 ```
 
-This runs DesigniteJava to extract 21 OO metrics, then trains each model with 5-fold stratified CV, grid search over hyperparameters, and per-label threshold tuning. Results go to `artifacts/runs/<fingerprint>/<model>_results.json`.
+Extracts 21 OO metrics via DesigniteJava, trains with 5-fold stratified CV, grid search and per-label threshold tuning.
 
-### Step 2: Sequence DL (4 models, ~1h on GPU)
+### Sequence DL (6 models)
 
 ```bash
-for model in lstm bilstm bilstm_plain cnn; do
+for model in lstm bilstm bilstm_plain gru cnn codebert; do
   uv run python main.py --config config/experiments/sequence_${model}_pipeline.yml
 done
 ```
 
-Tokenizes code with a regex splitter (vocab 10k, max length 512), trains with focal loss and early stopping. GPU recommended; falls back to CPU.
+Tokenizes code with a regex splitter (vocab 10k, max length 512), trains with focal loss and early stopping. CodeBERT uses its own subword tokenizer. GPU recommended.
 
-### Step 3: GNN (3 architectures)
+### GNN (3 architectures)
 
 ```bash
 uv run python main.py --config config/experiments/gcn_baseline.yml
 ```
 
-Parses each snippet into an AST with ANTLR Java 8, builds PyTorch Geometric graphs with Child edges and 69-dim node features (64-dim type embedding + 5 numeric), trains with focal loss. it actually does an ablation with the 3 architectures. 
+Parses each snippet into an AST with ANTLR Java 8, builds PyTorch Geometric graphs with Child edges and 69-dim node features, trains with focal loss. Supports GCN, GAT, GraphSAGE via ablation config.
 
-### Step 4: Generate figures and tables
+### Generate figures
 
 ```bash
 uv run python scripts/report_runs.py --artifacts-root artifacts
-uv run python scripts/plot_confusion_matrices.py --artifacts-root artifacts
 ```
 
 ## Changing things
 
-Any YAML key can be overridden from the command line. The pipeline re-runs only the stages affected by the change.
+Any YAML key can be overridden from the command line. The pipeline re-runs only the affected stages.
 
 ```bash
-# Train LSTM with a larger hidden layer and only 2 seeds
+# Larger hidden layer, fewer seeds
 uv run python main.py --config config/experiments/sequence_lstm_pipeline.yml \
   '--training.model_params.hidden_dim=256' \
   '--training.seeds=[42,43]'
 
-# Try XGBoost with a custom grid
+# Custom hyperparameter grid
 uv run python main.py --config config/experiments/classical_xgboost_pipeline.yml \
   '--training.param_grid.n_estimators=[50,100,500]' \
   '--training.param_grid.max_depth=[3,5,10]'
 
-# Run GCN with 3 GNN layers instead of 2
-uv run python main.py --config config/experiments/gcn_baseline.yml \
-  '--training.num_layers=3'
-
-# Force rebuild everything (ignore cache)
-uv run python main.py --config config/experiments/classical_rf_pipeline.yml \
-  '--run.force_rebuild=true'
-
-# Switch binarization rule to match Madeyski DS1 (major+critical only)
+# Switch binarization to match Madeyski DS1
 uv run python main.py --config config/experiments/classical_rf_pipeline.yml \
   '--normalization.rule=madeyskiDS1'
+
+# Force rebuild (ignore cache)
+uv run python main.py --config config/experiments/classical_rf_pipeline.yml \
+  '--run.force_rebuild=true'
 ```
 
-Config files inherit from `config/defaults.yml`. Look there for the full list of parameters.
+Config files inherit from `config/defaults.yml`.
 
-## What each stage does
+## Pipeline stages
 
-**Normalization** -- Aggregates multi-reviewer MLCQ annotations into binary labels. Default: median severity, positive if severity > none. Supports Madeyski DS1/DS2 rules via `--normalization.rule`.
+**Normalization** -- Aggregates multi-reviewer annotations into binary labels. Default: median severity, positive if severity > none. Configurable rules (default, madeyskiDS1, madeyskiDS2).
 
-**Metric extraction** -- Runs DesigniteJava in batches to extract 11 type-level metrics (NOF, NOM, WMC, DIT, LCOM, FANIN, FANOUT, ...) and 3 method-level metrics (LOC, CC, PC) aggregated by max/sum/avg, plus method count. 21 features total.
+**Metric extraction** -- DesigniteJava extracts 11 type-level metrics (NOF, NOM, WMC, DIT, LCOM, FANIN, FANOUT, ...) and 3 method-level metrics (LOC, CC, PC) aggregated by max/sum/avg plus method count. 21 features total.
 
-**Token dataset** -- Regex tokenizer splits code into identifiers, keywords, operators, literals. Builds vocabulary from training data, pads/truncates to fixed length. Optional Word2Vec pre-training.
+**Token dataset** -- Regex tokenizer splits code into identifiers, keywords, operators, literals. Vocabulary built from training data, sequences padded/truncated to fixed length. Optional Word2Vec pre-training.
 
-**AST construction** -- ANTLR Java 8 grammar parses each snippet (wrapped in a synthetic class) into a syntax tree. 202 node types. Exports as DOT files, then converted to PyTorch Geometric Data objects.
+**AST construction** -- ANTLR Java 8 grammar parses each snippet into a syntax tree with 202 node types. Exports as DOT, converted to PyTorch Geometric Data objects.
 
-**Training** -- Dispatches to the right training script based on `training.used_method` (classical, sequence, gnn). All share: multi-seed evaluation, per-label threshold tuning, imbalance-aware losses.
+**Training** -- Dispatches based on `training.used_method` (classical, sequence, gnn, codebert). Multi-seed evaluation, per-label threshold tuning, focal loss for DL models.
 
-**Caching** -- Each stage computes a SHA-256 fingerprint from its inputs and config. If the fingerprint matches a previous run, the stage is skipped. This means switching between models in the same family is fast (normalization and feature extraction are reused).
-
-## What we plan to do next
-
-We are working on integrating [DaCoSX](https://github.com/nicedaycode/DaCoSX) as an alternative dataset to test generalization beyond MLCQ. We also want to run a more systematic comparison of imbalance-handling strategies (focal loss vs asymmetric loss vs class-weighted BCE vs SMOTE) since different losses can shift per-smell performance substantially and the current setup only scratches the surface.
+**Caching** -- SHA-256 fingerprint per stage. Unchanged stages are skipped across runs.
 
 ## Project structure
 
@@ -112,7 +105,7 @@ config/
 mlcq_graphs/
   pipeline.py                      # stage orchestrator + caching
   models/                          # classical.py, sequence.py, gcn.py, gat.py, graphsage.py
-  training/                        # focal loss ( weighted BCE, ASL // not yet used)
+  training/                        # focal loss, weighted BCE
   evaluation/                      # F1, MCC, PR-AUC, threshold tuning
 scripts/
   NormalizeFromJson.py              # reviewer aggregation + binarization
@@ -122,13 +115,23 @@ scripts/
   build_pyg_dataset_from_dot.py     # DOT to PyG
   train_classical.py                # sklearn training
   train_sequence.py                 # PyTorch sequence training
+  train_codebert.py                 # CodeBERT fine-tuning
   report_runs.py                    # tables + figures
 tools/
   designite.jar                     # metric extraction
   antlr/                            # Java 8 grammar
-data/
-  MLCQCodeSmellSamples.json         # MLCQ (not redistributed)
+data/                               # datasets (included)
 artifacts/                          # outputs (gitignored)
+```
+
+## Citation
+
+```bibtex
+@article{detect2026,
+  title   = {A Survey on Code Smells Detection using Machine Learning Techniques},
+  year    = {2026},
+  journal = {Information and Software Technology}
+}
 ```
 
 ## License
