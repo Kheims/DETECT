@@ -1,0 +1,50 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: sequence_bilstm_pipeline
+  artifacts_root: artifacts
+
+normalization:
+  enabled: true
+  input_json: data/MLCQCodeSmellSamples.json
+  method: median
+  rule: default
+
+construction:
+  enabled: false
+
+metric_extraction:
+  enabled: false
+
+dataset:
+  enabled: false
+
+token_encoder:
+  enabled: false
+
+token_dataset:
+  enabled: true
+  max_tokens: 512
+  min_freq: 2
+  max_vocab: 10000
+
+training:
+  enabled: true
+  used_method: sequence
+  model: bilstm_attention
+  num_labels: 4
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  device: auto
+  embed_dim: 128
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.3
+  batch_size: 32
+  lr: 0.001
+  weight_decay: 0.00001
+  epochs: 50
+  patience: 10
+  loss: focal
+  focal_gamma: 2.0
+  train_ratio: 0.8
+  val_ratio: 0.1

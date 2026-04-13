@@ -1,0 +1,44 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: classical_svm_pipeline
+  artifacts_root: artifacts
+
+normalization:
+  enabled: true
+  input_json: data/MLCQCodeSmellSamples.json
+  method: median
+  rule: default
+
+construction:
+  enabled: false
+
+metric_extraction:
+  enabled: true
+  tool: designite
+  batch_size: 500
+  workers: 6
+
+dataset:
+  enabled: false
+
+token_encoder:
+  enabled: false
+
+token_dataset:
+  enabled: false
+
+training:
+  enabled: true
+  used_method: classical
+  model: svm
+  cross_validation: true
+  n_folds: 5
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  threshold_tuning: true
+  model_params:
+    kernel: rbf
+    C: 1.0
+  param_grid:
+    kernel: [linear, rbf]
+    C: [0.1, 1.0, 10.0]

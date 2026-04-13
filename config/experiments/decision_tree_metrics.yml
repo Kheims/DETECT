@@ -1,0 +1,25 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: decision_tree_metrics
+
+construction:
+  enabled: false
+dataset:
+  enabled: false
+  metrics_csv: artifacts/metrics_dataset.csv
+token_encoder:
+  enabled: false
+
+training:
+  enabled: true
+  method: classical_ml
+  model: decision_tree
+  cross_validation: true
+  n_folds: 5
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  model_params:
+    max_depth: 10
+    min_samples_split: 2
+  param_grid:
+    max_depth: [5, 10, 20, null]

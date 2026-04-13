@@ -1,0 +1,25 @@
+_include_yml: ../defaults.yml
+
+run:
+  name: genetic_search
+
+construction:
+  enabled: false
+dataset:
+  enabled: false
+  metrics_csv: artifacts/metrics_dataset.csv
+token_encoder:
+  enabled: false
+
+training:
+  enabled: true
+  method: genetic
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  train_ratio: 0.8
+  model_params:
+    population_size: 100
+    generations: 200
+    mutation_rate: 0.1
+    crossover_rate: 0.7
+    tournament_size: 5
+    elite_size: 5
