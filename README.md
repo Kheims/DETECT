@@ -4,7 +4,7 @@
 
 A unified pipeline that evaluates classical ML, sequence DL and graph neural network models under identical preprocessing, label definitions and evaluation protocols. Three model families, one entry point, YAML-driven configuration.
 
-Currently supports the [MLCQ](https://zenodo.org/records/3666840) dataset. Integration of [DaCoSX](https://github.com/nicedaycode/DaCoSX) and support for alternative binarization protocols (Madeyski DS1/DS2) are ongoing.
+Currently supports the [MLCQ](https://zenodo.org/records/3666840) dataset. Integration of [DaCoSX](https://zenodo.org/records/7570428) and support for alternative binarization protocols (Madeyski DS1/DS2) are ongoing.
 
 ![Pipeline overview](docs/diagrams/pipeline_overview.svg)
 
