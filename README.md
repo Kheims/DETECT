@@ -124,16 +124,4 @@ data/                               # datasets (included)
 artifacts/                          # outputs (gitignored)
 ```
 
-## Citation
 
-```bibtex
-@article{detect2026,
-  title   = {A Survey on Code Smells Detection using Machine Learning Techniques},
-  year    = {2026},
-  journal = {Information and Software Technology}
-}
-```
-
-## License
-
-See LICENSE file.
