@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# PMD binary distribution downloaded by scripts/analysis/run_pmd.py
+tools/pmd/
