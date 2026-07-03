@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 import json
+import random
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -248,6 +249,114 @@ def _build_dot(
     return "\n".join(lines) + "\n", stats
 
 
+# ---------------------------------------------------------------- tree-sitter
+
+_TS_PARSER: Any = None
+TS_ATOMIC_TYPES = {"string_literal", "character_literal", "text_block"}
+TS_COMMENT_TYPES = {"line_comment", "block_comment", "comment"}
+
+
+def _ts_parser() -> Any:
+    global _TS_PARSER
+    if _TS_PARSER is None:
+        import tree_sitter as ts
+        import tree_sitter_java as tsj
+
+        _TS_PARSER = ts.Parser(ts.Language(tsj.language()))
+    return _TS_PARSER
+
+
+def _build_dot_tree_sitter(
+    source_text: str,
+    graph_comment: str,
+    allow_errors: bool,
+) -> tuple[str | None, GraphStats | None, str | None]:
+    """Same DOT layout as _build_dot (pre-order node indices, Child and
+    NextToken edges, SyntaxNode/SyntaxToken kinds), from a tree-sitter-java
+    concrete syntax tree. Node types are tree-sitter node types. Comments are
+    dropped and string/char literals are single tokens, as with ANTLR."""
+    tree = _ts_parser().parse(source_text.encode("utf-8"))
+    root = tree.root_node
+    if root.has_error and not allow_errors:
+        return None, None, "tree-sitter: syntax error"
+
+    lines: list[str] = ["digraph G {", f'graph [comment="{_escape_dot(graph_comment)}"]']
+    node_lines: list[str] = []
+    edge_lines: list[str] = []
+    token_node_ids: list[str] = []
+    syntax_node_count = 0
+    child_edge_count = 0
+    next_index = 0
+
+    stack: list[tuple[Any, str | None]] = [(root, None)]
+    while stack:
+        node, parent_id = stack.pop()
+        if node.type in TS_COMMENT_TYPES:
+            continue
+        node_id = f"n{next_index}"
+        node_index = next_index
+        next_index += 1
+        start_row, start_col = node.start_point
+        end_row, end_col = node.end_point
+        is_token = node.child_count == 0 or node.type in TS_ATOMIC_TYPES
+        attrs: dict[str, Any] = {
+            "node_index": node_index,
+            "node_kind": "SyntaxToken" if is_token else "SyntaxNode",
+            "node_type": node.type,
+        }
+        if is_token:
+            attrs["token_text"] = node.text.decode("utf-8", errors="replace")
+            attrs["token_index"] = len(token_node_ids)
+            token_node_ids.append(node_id)
+        else:
+            syntax_node_count += 1
+        attrs.update(
+            {
+                "start_line": start_row + 1,
+                "start_col": start_col,
+                "end_line": end_row + 1,
+                "end_col": max(start_col, end_col - 1) if end_row == start_row else end_col,
+            }
+        )
+        node_lines.append(f'"{node_id}" [{_dot_attrs(attrs)}]')
+        if parent_id is not None:
+            edge_lines.append(f'"{parent_id}" -> "{node_id}" [edge_type="Child"]')
+            child_edge_count += 1
+        if not is_token:
+            for child in reversed(node.children):
+                stack.append((child, node_id))
+
+    for src, dst in zip(token_node_ids, token_node_ids[1:]):
+        edge_lines.append(f'"{src}" -> "{dst}" [edge_type="NextToken"]')
+
+    lines.extend(node_lines)
+    lines.extend(edge_lines)
+    lines.append("}")
+    stats = GraphStats(
+        node_count=len(node_lines),
+        syntax_node_count=syntax_node_count,
+        syntax_token_count=len(token_node_ids),
+        edge_count=len(edge_lines),
+        child_edge_count=child_edge_count,
+        next_token_edge_count=max(0, len(token_node_ids) - 1),
+    )
+    return "\n".join(lines) + "\n", stats, None
+
+
+def _build_graph(source_text: str, graph_comment: str, task: dict[str, Any]) -> tuple[str | None, GraphStats | None, str | None]:
+    """Parse with the backend named in the task (antlr or tree_sitter)."""
+    backend = str(task.get("parser", "antlr"))
+    if backend == "tree_sitter":
+        return _build_dot_tree_sitter(source_text, graph_comment, bool(task.get("allow_errors", False)))
+    if backend != "antlr":
+        raise ValueError(f"Unknown parser backend: {backend}")
+    parse_result = _parse_compilation_unit(source_text)
+    if parse_result.success and parse_result.tree is not None and parse_result.parser is not None:
+        dot_text, stats = _build_dot(tree=parse_result.tree, parser=parse_result.parser, graph_comment=graph_comment)
+        return dot_text, stats, None
+    return None, None, parse_result.error
+
+
 def _sanitize_stem(file_path: str) -> str:
     stem = Path(file_path).stem
     cleaned = "".join(ch for ch in stem if ch.isalnum() or ch == "_")
@@ -309,18 +418,11 @@ def _process_json_task(task: dict[str, Any]) -> dict[str, Any]:
         status = "skipped"
     else:
         source_text = _wrap_snippet_in_class(str(entry.get("code_snippet", "")))
-        parse_result = _parse_compilation_unit(source_text)
-
-        if parse_result.success and parse_result.tree is not None and parse_result.parser is not None:
-            dot_text, stats = _build_dot(
-                tree=parse_result.tree,
-                parser=parse_result.parser,
-                graph_comment=_normalized_comment(json_index, entry),
-            )
+        dot_text, stats, error = _build_graph(source_text, _normalized_comment(json_index, entry), task)
+        if dot_text is not None:
             output_path.write_text(dot_text)
         else:
             status = "failed"
-            error = parse_result.error
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return {
@@ -363,6 +465,8 @@ def run_from_json(args: argparse.Namespace) -> dict[str, Any]:
                 "entry": entry,
                 "output_path": str(output_path),
                 "overwrite": args.overwrite,
+                "parser": args.parser,
+                "allow_errors": args.allow_parse_errors,
             }
         )
 
@@ -443,18 +547,11 @@ def _process_dir_task(task: dict[str, Any]) -> dict[str, Any]:
     else:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         source_text = source_path.read_text(errors="replace")
-        parse_result = _parse_compilation_unit(source_text)
-
-        if parse_result.success and parse_result.tree is not None and parse_result.parser is not None:
-            dot_text, stats = _build_dot(
-                tree=parse_result.tree,
-                parser=parse_result.parser,
-                graph_comment=_dir_comment(input_rel_path),
-            )
+        dot_text, stats, error = _build_graph(source_text, _dir_comment(input_rel_path), task)
+        if dot_text is not None:
             output_path.write_text(dot_text)
         else:
             status = "failed"
-            error = parse_result.error
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return {
@@ -470,7 +567,23 @@ def _process_dir_task(task: dict[str, Any]) -> dict[str, Any]:
 
 def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
     java_files = _list_java_files(args.input_dir)
+    excluded_dirs = {d.strip() for d in (args.exclude_top_dirs or "").split(",") if d.strip()}
+    if excluded_dirs:
+        java_files = [
+            path for path in java_files
+            if path.relative_to(args.input_dir).parts[0] not in excluded_dirs
+        ]
+    if args.max_file_bytes is not None:
+        java_files = [path for path in java_files if path.stat().st_size <= args.max_file_bytes]
+    if args.sample_seed is not None:
+        # random subset instead of the first files in path order (one project)
+        random.Random(args.sample_seed).shuffle(java_files)
     subset = java_files if args.limit is None else java_files[: args.limit]
+    print(
+        f"[from-dir] candidates={len(java_files)} selected={len(subset)} "
+        f"excluded_top_dirs={sorted(excluded_dirs)} max_file_bytes={args.max_file_bytes}",
+        flush=True,
+    )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -486,6 +599,8 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
                 "source_path": str(source_path),
                 "output_path": str(output_path),
                 "overwrite": args.overwrite,
+                "parser": args.parser,
+                "allow_errors": args.allow_parse_errors,
             }
         )
 
@@ -585,6 +700,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Task chunk size for multiprocessing map.",
     )
     json_parser.add_argument(
+        "--parser",
+        choices=["antlr", "tree_sitter"],
+        default="antlr",
+        help="Parser backend: ANTLR Java8 grammar or tree-sitter-java.",
+    )
+    json_parser.add_argument(
+        "--allow-parse-errors",
+        action="store_true",
+        help="tree-sitter only: keep graphs that contain ERROR nodes.",
+    )
+    json_parser.add_argument(
         "--progress-every",
         type=int,
         default=100,
@@ -616,6 +742,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum number of Java files to process (default: all).",
     )
+    dir_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=None,
+        help="Skip Java files larger than this size.",
+    )
+    dir_parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=None,
+        help="Shuffle the file list with this seed before applying --limit.",
+    )
+    dir_parser.add_argument(
+        "--exclude-top-dirs",
+        type=str,
+        default="",
+        help="Comma separated top-level directories (projects) to skip.",
+    )
     dir_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files.")
     dir_parser.add_argument(
         "--workers",
@@ -628,6 +772,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8,
         help="Task chunk size for multiprocessing map.",
+    )
+    dir_parser.add_argument(
+        "--parser",
+        choices=["antlr", "tree_sitter"],
+        default="antlr",
+        help="Parser backend: ANTLR Java8 grammar or tree-sitter-java.",
+    )
+    dir_parser.add_argument(
+        "--allow-parse-errors",
+        action="store_true",
+        help="tree-sitter only: keep graphs that contain ERROR nodes.",
     )
     dir_parser.add_argument(
         "--progress-every",

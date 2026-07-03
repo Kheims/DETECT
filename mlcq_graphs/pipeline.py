@@ -61,6 +61,7 @@ class PipelineRunner:
         "dataset",
         "token_encoder",
         "token_dataset",
+        "pretraining",
         "training",
         "reporting",
     )
@@ -139,6 +140,7 @@ class PipelineRunner:
             "tokenencoder": "token_encoder",
             "token_dataset": "token_dataset",
             "token-dataset": "token_dataset",
+            "pretraining": "pretraining",
             "training": "training",
             "reporting": "reporting",
         }
@@ -258,6 +260,18 @@ class PipelineRunner:
             )
             stages["token_dataset"] = token_dataset_state
 
+        pretraining_state = None
+        if bool(config.get("pretraining", {}).get("enabled", False)):
+            pretraining_state = self._run_stage_with_logs(
+                "pretraining",
+                lambda: self._run_pretraining(
+                    config,
+                    artifacts_root,
+                    force_stage=("pretraining" in forced_stages),
+                ),
+            )
+            stages["pretraining"] = pretraining_state
+
         # Init W&B before training so the Trainer logs epochs live.
         # Skip if ablation already injected a run via _wandb_run.
         wandb_run = config.get("_wandb_run")
@@ -305,6 +319,7 @@ class PipelineRunner:
                     metric_extraction_state=metric_extraction_state,
                     token_dataset_state=token_dataset_state,
                     normalization_state=normalization_state,
+                    pretraining_state=pretraining_state,
                     force_stage=("training" in forced_stages),
                 ),
             )
@@ -375,11 +390,20 @@ class PipelineRunner:
         if not isinstance(seeds, list) or not seeds:
             raise ValueError("ablation.seeds must be a non-empty list")
 
+        # Optional sharding so that one ablation can be spread over a job array:
+        # shard `index` runs every trial whose position modulo `count` equals it.
+        shard_cfg = ablation_cfg.get("shard") or {}
+        shard_count = int(shard_cfg.get("count", 1))
+        shard_index = int(shard_cfg.get("index", 0))
+        if shard_count < 1 or not 0 <= shard_index < shard_count:
+            raise ValueError("ablation.shard needs count >= 1 and 0 <= index < count")
+
         run_cfg = base_cfg.get("run", {})
         artifacts_root = to_path(self.project_root, run_cfg.get("artifacts_root", "artifacts"))
         base_name = str(run_cfg.get("name", "ablation"))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_dir = artifacts_root / "reports" / f"{base_name}_{timestamp}"
+        shard_suffix = f"_shard{shard_index}of{shard_count}" if shard_count > 1 else ""
+        report_dir = artifacts_root / "reports" / f"{base_name}_{timestamp}{shard_suffix}"
         report_dir.mkdir(parents=True, exist_ok=True)
 
         grid_keys = list(grid.keys())
@@ -393,6 +417,9 @@ class PipelineRunner:
         for combo_idx, combo_values in enumerate(combos, start=1):
             combo = {grid_keys[i]: combo_values[i] for i in range(len(grid_keys))}
             for seed in seeds:
+                trial_num += 1
+                if (trial_num - 1) % shard_count != shard_index:
+                    continue
                 trial_cfg = copy.deepcopy(base_cfg)
                 trial_cfg.setdefault("ablation", {})["enabled"] = False
                 trial_cfg.setdefault("training", {})["seed"] = int(seed)
@@ -402,7 +429,6 @@ class PipelineRunner:
                     f"{base_name}_c{combo_idx:03d}_s{seed}"
                 )
 
-                trial_num += 1
                 combo_display = " ".join(f"{k.split('.')[-1]}={v}" for k, v in sorted(combo.items()))
                 print(f"\n[ablation] Trial {trial_num}/{total_trials}: {combo_display} seed={seed}")
 
@@ -698,7 +724,7 @@ class PipelineRunner:
         figure_path = report_dir / "ablation_f1_macro_tuned.png"
         generate_ablation_figure(summary_rows=summary_rows, output_path=figure_path, metric="f1_macro_tuned")
 
-        # Console summary table — auto-detect columns from grid keys
+        # Console summary table: auto-detect columns from grid keys
         col_keys = grid_keys
         col_names = [k.split(".")[-1] for k in col_keys]
         col_widths = [max(len(name), 10) for name in col_names]
@@ -819,6 +845,13 @@ class PipelineRunner:
         stage_dir.mkdir(parents=True, exist_ok=True)
         script_path = self.project_root / "scripts" / "build_ast_dot_from_normalized.py"
 
+        # Optional relational augmentation: the plain AST graphs are built into
+        # dot_base/ and the augmented graphs are written to the usual outputs.
+        rel_cfg = stage_cfg.get("relational") or {}
+        use_relational = bool(rel_cfg.get("enabled", False))
+        base_dot_dir = str(stage_dir / "dot_base") if use_relational else outputs["dot_dir"]
+        base_manifest = str(stage_dir / "manifest_base.jsonl") if use_relational else outputs["manifest_path"]
+
         mode = str(stage_cfg.get("mode", "from-json"))
         cmd = [sys.executable, str(script_path), mode]
 
@@ -827,9 +860,9 @@ class PipelineRunner:
                 "--input-json",
                 str(to_path(self.project_root, stage_cfg.get("input_json"))),
                 "--output-dir",
-                outputs["dot_dir"],
+                base_dot_dir,
                 "--manifest-path",
-                outputs["manifest_path"],
+                base_manifest,
                 "--start-index",
                 str(stage_cfg.get("start_index", 0)),
                 "--workers",
@@ -848,9 +881,9 @@ class PipelineRunner:
                 "--input-dir",
                 str(to_path(self.project_root, stage_cfg.get("input_dir"))),
                 "--output-dir",
-                outputs["dot_dir"],
+                base_dot_dir,
                 "--manifest-path",
-                outputs["manifest_path"],
+                base_manifest,
                 "--workers",
                 str(stage_cfg.get("workers", 1)),
                 "--chunksize",
@@ -865,7 +898,36 @@ class PipelineRunner:
         else:
             raise ValueError(f"Unsupported construction mode: {mode}")
 
+        # Parser backend (antlr by default); only passed when set so that the
+        # fingerprints of existing ANTLR configurations do not change.
+        if stage_cfg.get("parser") is not None:
+            cmd += ["--parser", str(stage_cfg["parser"])]
+        if bool(stage_cfg.get("allow_parse_errors", False)):
+            cmd.append("--allow-parse-errors")
+
         self._run_command(cmd, print_commands=bool(run_cfg.get("print_commands", True)))
+
+        if use_relational:
+            if mode != "from-json":
+                raise ValueError("construction.relational requires mode=from-json")
+            rel_cmd = [
+                sys.executable,
+                str(self.project_root / "scripts" / "data" / "augment_dot_relational.py"),
+                "--normalized",
+                str(to_path(self.project_root, stage_cfg.get("input_json"))),
+                "--context-dir",
+                str(to_path(self.project_root, rel_cfg.get("context_dir", "data/context_files"))),
+                "--dot-dir",
+                base_dot_dir,
+                "--manifest",
+                base_manifest,
+                "--out-dir",
+                str(stage_dir),
+                "--level",
+                str(int(rel_cfg.get("level", 1))),
+            ]
+            self._run_command(rel_cmd, print_commands=bool(run_cfg.get("print_commands", True)))
+
         self._write_stage_meta(
             stage_dir=stage_dir,
             payload={
@@ -960,6 +1022,8 @@ class PipelineRunner:
             cmd.append("--no-memory-stats")
         if bool(stage_cfg.get("allow_dot_dir_fallback", False)):
             cmd.append("--allow-dot-dir-fallback")
+        if bool(stage_cfg.get("store_edge_types", False)):
+            cmd.append("--store-edge-types")
 
         self._run_command(cmd, print_commands=bool(run_cfg.get("print_commands", True)))
         self._write_stage_meta(
@@ -1256,6 +1320,7 @@ class PipelineRunner:
         metric_extraction_state: StageState | None,
         token_dataset_state: StageState | None,
         normalization_state: StageState | None = None,
+        pretraining_state: StageState | None = None,
         force_stage: bool = False,
     ) -> StageState:
         stage_cfg = config.get("training", {})
@@ -1289,22 +1354,16 @@ class PipelineRunner:
             )
 
         # GNN path (existing behaviour)
-        if construction_state is None:
-            raise ValueError("GNN training requires construction stage output")
-        if dataset_state is None:
-            raise ValueError("GNN training requires dataset stage output")
-
+        fingerprint, payload, train_cfg = self.gnn_training_plan(
+            config=config,
+            artifacts_root=artifacts_root,
+            construction_state=construction_state,
+            dataset_state=dataset_state,
+            token_state=token_state,
+            pretraining_state=pretraining_state,
+        )
         run_cfg = config.get("run", {})
-        payload = {
-            "stage": "training",
-            "used_method": "gnn",
-            "config": stage_cfg,
-            "dataset_fingerprint": dataset_state.fingerprint,
-            "token_encoder_fingerprint": token_state.fingerprint if token_state else None,
-        }
-        fingerprint = stable_fingerprint(jsonable(payload))
-        runs_root = artifacts_root / "runs"
-        run_dir = runs_root / fingerprint
+        run_dir = artifacts_root / "runs" / fingerprint
 
         outputs = {
             "run_dir": str(run_dir),
@@ -1318,6 +1377,9 @@ class PipelineRunner:
             outputs,
             force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
         ):
+            if train_cfg.get("save_predictions") and not (run_dir / "predictions.jsonl").exists():
+                print(f"[train] reused run {fingerprint[:8]} has no predictions.jsonl "
+                      "(write it with scripts/cv/export_gnn_predictions.py)")
             return StageState(
                 name="training",
                 fingerprint=fingerprint,
@@ -1327,15 +1389,81 @@ class PipelineRunner:
             )
 
         run_dir.mkdir(parents=True, exist_ok=True)
-        split_seed = int(stage_cfg.get("seed", 42))
-        split_path = (
-            artifacts_root
-            / "cache"
-            / "splits"
-            / dataset_state.fingerprint
-            / f"split_seed_{split_seed}.json"
+        Path(train_cfg["split_path"]).parent.mkdir(parents=True, exist_ok=True)
+
+        from scripts.train_gcn_baseline import run_training
+
+        wandb_run = config.get("_wandb_run")
+        if bool(run_cfg.get("print_commands", True)):
+            print(
+                f"[train] in-process  architecture={train_cfg['architecture']} "
+                f"loss={train_cfg['loss']} seed={train_cfg['seed']}"
+            )
+
+        run_training(train_cfg, wandb_run=wandb_run)
+        self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
+
+        return StageState(
+            name="training",
+            fingerprint=fingerprint,
+            stage_dir=str(run_dir),
+            reused=False,
+            outputs=outputs,
         )
-        split_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def gnn_training_plan(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        construction_state: StageState | None,
+        dataset_state: StageState | None,
+        token_state: StageState | None,
+        pretraining_state: StageState | None = None,
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """Fingerprint, fingerprint payload and run_training() config of the GNN
+        training stage, without side effects. scripts/cv/export_gnn_predictions.py
+        uses it to rebuild finished runs exactly as they were trained."""
+        stage_cfg = config.get("training", {})
+        if construction_state is None:
+            raise ValueError("GNN training requires construction stage output")
+        if dataset_state is None:
+            raise ValueError("GNN training requires dataset stage output")
+
+        # save_predictions leaves the trained model unchanged and train_fraction
+        # 1.0 is the default: both stay out of the fingerprint, so runs trained
+        # without these options keep their fingerprint and are reused.
+        fingerprint_cfg = {key: value for key, value in stage_cfg.items() if key != "save_predictions"}
+        train_fraction = float(stage_cfg.get("train_fraction", 1.0))
+        if train_fraction == 1.0:
+            fingerprint_cfg.pop("train_fraction", None)
+        payload = {
+            "stage": "training",
+            "used_method": "gnn",
+            "config": fingerprint_cfg,
+            "dataset_fingerprint": dataset_state.fingerprint,
+            "token_encoder_fingerprint": token_state.fingerprint if token_state else None,
+        }
+        init_from_pretraining = bool(stage_cfg.get("init_from_pretraining", False))
+        if init_from_pretraining:
+            if pretraining_state is None:
+                raise ValueError("training.init_from_pretraining needs pretraining.enabled: true")
+            payload["pretraining_fingerprint"] = pretraining_state.fingerprint
+        fingerprint = stable_fingerprint(jsonable(payload))
+        runs_root = artifacts_root / "runs"
+
+        split_seed = int(stage_cfg.get("seed", 42))
+        split_strategy = str(stage_cfg.get("split_strategy", "random"))
+        # random splits keep their historical file name
+        if split_strategy == "random":
+            split_name = f"split_seed_{split_seed}.json"
+        elif split_strategy in {"kfold", "group_kfold"}:
+            split_name = (
+                f"split_{split_strategy}_{stage_cfg.get('split_group_key', 'repo_url')}"
+                f"_k{stage_cfg.get('cv_folds', 5)}_f{stage_cfg.get('cv_fold', 0)}_seed_{split_seed}.json"
+            )
+        else:
+            split_name = f"split_{split_strategy}_{stage_cfg.get('split_group_key', 'repo_url')}_seed_{split_seed}.json"
+        split_path = artifacts_root / "cache" / "splits" / dataset_state.fingerprint / split_name
 
         # Architecture-aware batch budget
         architecture = str(stage_cfg.get("architecture", "gcn"))
@@ -1347,9 +1475,6 @@ class PipelineRunner:
         focal_cfg = stage_cfg.get("focal_loss", {})
         if not isinstance(focal_cfg, dict):
             focal_cfg = {}
-
-        # Build config dict for run_training()
-        from scripts.train_gcn_baseline import run_training
 
         train_cfg: dict[str, Any] = {
             "dataset_path": dataset_state.outputs["dataset_path"],
@@ -1385,6 +1510,19 @@ class PipelineRunner:
             "num_layers": int(stage_cfg.get("num_layers", 2)),
             "num_heads": int(stage_cfg.get("gat_num_heads", 4)),
             "aggregation": str(stage_cfg.get("graphsage_aggregation", "mean")),
+            "pooling": str(stage_cfg.get("pooling", "mean")),
+            "set2set_steps": int(stage_cfg.get("set2set_steps", 3)),
+            "edge_type_mode": str(stage_cfg.get("edge_type_mode", "ignore")),
+            "split_strategy": split_strategy,
+            "cv_folds": int(stage_cfg.get("cv_folds", 5)),
+            "cv_fold": int(stage_cfg.get("cv_fold", 0)),
+            "split_group_key": str(stage_cfg.get("split_group_key", "repo_url")),
+            "split_group_json": str(to_path(self.project_root, config.get("construction", {}).get("input_json"))),
+            "rgcn_num_bases": stage_cfg.get("rgcn_num_bases"),
+            "pool_subset_types": list(stage_cfg.get("pool_subset_types") or []),
+            "graph_features": stage_cfg.get("graph_features"),
+            "node_type_vocab_path": dataset_state.outputs["node_type_vocab_path"],
+            "project_root": str(self.project_root),
             "loss": str(stage_cfg.get("loss", "weighted_bce")),
             "focal_gamma": float(focal_cfg.get("gamma", 2.0)),
             "focal_alpha": float(focal_cfg.get("alpha", -1.0)),
@@ -1392,24 +1530,222 @@ class PipelineRunner:
             "early_stopping_min_delta": float(stage_cfg.get("early_stopping_min_delta", 0.0)),
             "max_graphs": stage_cfg.get("max_graphs"),
         }
+        # Optional keys, passed only when set so the fingerprints of older runs stay valid.
+        for key in ("labels_json", "seq_source_json", "review_shares_json"):
+            if stage_cfg.get(key):
+                train_cfg[key] = str(to_path(self.project_root, stage_cfg[key]))
+        for key in (
+            "hybrid_branch", "seq_max_tokens", "seq_min_freq", "seq_max_vocab", "seq_embed_dim",
+            "seq_hidden_dim", "seq_num_layers", "seq_dropout", "seq_mask_padding", "train_target",
+        ):
+            if stage_cfg.get(key) is not None:
+                train_cfg[key] = stage_cfg[key]
+
+        if train_fraction != 1.0:
+            train_cfg["train_fraction"] = train_fraction
+        if bool(stage_cfg.get("save_predictions", False)):
+            train_cfg["save_predictions"] = True
+
+        if init_from_pretraining:
+            checkpoint_name = str(stage_cfg.get("pretrained_checkpoint", "encoder_best.pt"))
+            train_cfg["pretrained_encoder"] = str(Path(pretraining_state.stage_dir) / checkpoint_name)
+            train_cfg["freeze_encoder"] = bool(stage_cfg.get("freeze_encoder", False))
 
         if token_state is not None:
             train_cfg["token_vectors_path"] = token_state.outputs["vectors_path"]
             train_cfg["manifest_path"] = construction_state.outputs["manifest_path"]
+        return fingerprint, payload, train_cfg
 
-        wandb_run = config.get("_wandb_run")
-        if bool(run_cfg.get("print_commands", True)):
-            print(f"[train] in-process  architecture={architecture} loss={train_cfg['loss']} seed={split_seed}")
+    def _run_pretraining(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        force_stage: bool,
+    ) -> StageState:
+        """Self-supervised pre-training on an unlabelled Java corpus.
 
-        run_training(train_cfg, wandb_run=wandb_run)
-        self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
+        Three cached steps: AST graphs of the corpus (construction from-dir),
+        the PyG dataset of those graphs, then scripts/pretraining/pretrain_ssl.py (plain
+        python or torchrun, see pretraining.distributed).
+        """
+        stage_cfg = config.get("pretraining", {})
+        run_cfg = config.get("run", {})
+        print_cmds = bool(run_cfg.get("print_commands", True))
+        force = bool(run_cfg.get("force_rebuild", False)) or force_stage
+        data_out, data_fp = self.prepare_pretraining_data(config, artifacts_root, force)
+        return self._run_pretraining_model(config, artifacts_root, data_out, data_fp, force, print_cmds)
 
-        return StageState(
-            name="training",
-            fingerprint=fingerprint,
-            stage_dir=str(run_dir),
-            reused=False,
+    def prepare_pretraining_data(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        force: bool = False,
+    ) -> tuple[dict[str, str], str]:
+        """Build (or reuse) the corpus graphs and their PyG dataset."""
+        stage_cfg = config.get("pretraining", {})
+        run_cfg = config.get("run", {})
+        corpus_cfg = dict(stage_cfg.get("corpus", {}) or {})
+        print_cmds = bool(run_cfg.get("print_commands", True))
+
+        input_dir = to_path(self.project_root, corpus_cfg["input_dir"])
+        excluded = {str(d) for d in corpus_cfg.get("exclude_projects", []) or []}
+        if bool(corpus_cfg.get("exclude_mlcq_projects", True)):
+            # skip corpus projects that also appear in the labelled dataset
+            labelled = json.loads(
+                to_path(self.project_root, config.get("construction", {}).get("input_json")).read_text()
+            )
+            repo_names = {
+                str(entry.get("repo_url", "")).rstrip("/").split("/")[-1].lower().removesuffix(".git")
+                for entry in labelled
+            }
+            top_dirs = {path.name for path in input_dir.iterdir() if path.is_dir()}
+            excluded |= {d for d in top_dirs if d.lower() in repo_names}
+        excluded_list = sorted(excluded)
+
+        runtime_keys = {"workers", "chunksize", "progress_every"}
+        corpus_fp_cfg = {k: v for k, v in corpus_cfg.items() if k not in runtime_keys}
+        corpus_fp = stable_fingerprint(
+            jsonable({"stage": "pretrain_corpus", "config": corpus_fp_cfg, "excluded": excluded_list})
+        )
+        corpus_dir = artifacts_root / "cache" / "pretrain_corpus" / corpus_fp
+        corpus_out = {"dot_dir": str(corpus_dir / "dot"), "manifest_path": str(corpus_dir / "manifest.jsonl")}
+        if not self._can_reuse(corpus_dir, corpus_out, force=force):
+            corpus_dir.mkdir(parents=True, exist_ok=True)
+            cmd = [
+                sys.executable,
+                str(self.project_root / "scripts" / "build_ast_dot_from_normalized.py"),
+                "from-dir",
+                "--input-dir", str(input_dir),
+                "--output-dir", corpus_out["dot_dir"],
+                "--manifest-path", corpus_out["manifest_path"],
+                "--workers", str(corpus_cfg.get("workers", 8)),
+                "--chunksize", str(corpus_cfg.get("chunksize", 8)),
+                "--progress-every", str(corpus_cfg.get("progress_every", 500)),
+                "--exclude-top-dirs", ",".join(excluded_list),
+            ]
+            if corpus_cfg.get("limit") is not None:
+                cmd += ["--limit", str(corpus_cfg["limit"])]
+            if corpus_cfg.get("max_file_bytes") is not None:
+                cmd += ["--max-file-bytes", str(corpus_cfg["max_file_bytes"])]
+            if corpus_cfg.get("sample_seed") is not None:
+                cmd += ["--sample-seed", str(corpus_cfg["sample_seed"])]
+            if corpus_cfg.get("parser") is not None:
+                cmd += ["--parser", str(corpus_cfg["parser"])]
+            if bool(corpus_cfg.get("allow_parse_errors", False)):
+                cmd.append("--allow-parse-errors")
+            self._run_command(cmd, print_commands=print_cmds)
+            self._write_stage_meta(
+                stage_dir=corpus_dir,
+                payload={"stage": "pretrain_corpus", "config": corpus_cfg, "excluded_projects": excluded_list},
+                outputs=corpus_out,
+            )
+
+        edge_types = [str(e) for e in stage_cfg.get("edge_types", ["Child", "NextToken"])]
+        data_fp = stable_fingerprint(
+            jsonable({"stage": "pretrain_dataset", "corpus": corpus_fp, "edge_types": edge_types})
+        )
+        data_dir = artifacts_root / "cache" / "pretrain_dataset" / data_fp
+        data_out = {
+            "dataset_path": str(data_dir / "dataset.pt"),
+            "node_type_vocab_path": str(data_dir / "node_type_vocab.json"),
+            "metadata_path": str(data_dir / "dataset.meta.json"),
+        }
+        if not self._can_reuse(data_dir, data_out, force=force):
+            data_dir.mkdir(parents=True, exist_ok=True)
+            cmd = [
+                sys.executable,
+                str(self.project_root / "scripts" / "build_pyg_dataset_from_dot.py"),
+                "--manifest-path", corpus_out["manifest_path"],
+                "--dot-dir", corpus_out["dot_dir"],
+                "--dataset-out", data_out["dataset_path"],
+                "--node-type-vocab-out", data_out["node_type_vocab_path"],
+                "--metadata-out", data_out["metadata_path"],
+                "--edge-types", ",".join(edge_types),
+                "--progress-style", "print",
+                "--progress-every", "2000",
+                "--no-memory-stats",
+                "--allow-missing-labels",
+                "--store-edge-types",
+                "--store-source-path",
+            ]
+            self._run_command(cmd, print_commands=print_cmds)
+            self._write_stage_meta(
+                stage_dir=data_dir,
+                payload={"stage": "pretrain_dataset", "corpus_fingerprint": corpus_fp, "edge_types": edge_types},
+                outputs=data_out,
+            )
+        return data_out, data_fp
+
+    def pretraining_run_config(
+        self,
+        config: dict[str, Any],
+        data_out: dict[str, str],
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        """The JSON consumed by scripts/pretraining/pretrain_ssl.py."""
+        stage_cfg = config.get("pretraining", {})
+        metadata = json.loads(Path(data_out["metadata_path"]).read_text())
+        return {
+            **self._pretraining_model_cfg(stage_cfg),
+            "device": stage_cfg.get("device", "auto"),
+            "dataset_path": data_out["dataset_path"],
+            "node_type_vocab_path": data_out["node_type_vocab_path"],
+            "edge_type_order": metadata["edge_type_order"],
+            "output_dir": str(output_dir),
+        }
+
+    @staticmethod
+    def _pretraining_model_cfg(stage_cfg: dict[str, Any]) -> dict[str, Any]:
+        return {
+            k: v for k, v in stage_cfg.items()
+            if k not in {"enabled", "corpus", "edge_types", "distributed", "device"}
+        }
+
+    def _run_pretraining_model(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        data_out: dict[str, str],
+        data_fp: str,
+        force: bool,
+        print_cmds: bool,
+    ) -> StageState:
+        stage_cfg = config.get("pretraining", {})
+        dist_cfg = dict(stage_cfg.get("distributed", {}) or {})
+        model_cfg = self._pretraining_model_cfg(stage_cfg)
+        fingerprint = stable_fingerprint(
+            jsonable({"stage": "pretraining", "dataset": data_fp, "config": model_cfg})
+        )
+        stage_dir = artifacts_root / "cache" / "pretraining" / fingerprint
+        outputs = {
+            "encoder_path": str(stage_dir / "encoder_best.pt"),
+            "metrics_path": str(stage_dir / "pretrain_metrics.json"),
+        }
+        if self._can_reuse(stage_dir, outputs, force=force):
+            return StageState(
+                name="pretraining", fingerprint=fingerprint, stage_dir=str(stage_dir), reused=True, outputs=outputs
+            )
+
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        run_json = self.pretraining_run_config(config, data_out, stage_dir)
+        run_json_path = stage_dir / "run_config.json"
+        run_json_path.write_text(json.dumps(jsonable(run_json), indent=2))
+
+        script = str(self.project_root / "scripts" / "pretraining" / "pretrain_ssl.py")
+        nproc = int(dist_cfg.get("nproc_per_node", 1))
+        if nproc > 1:
+            cmd = [sys.executable, "-m", "torch.distributed.run", "--standalone", f"--nproc_per_node={nproc}", script]
+        else:
+            cmd = [sys.executable, script]
+        cmd += ["--config-json", str(run_json_path)]
+        self._run_command(cmd, print_commands=print_cmds)
+        self._write_stage_meta(
+            stage_dir=stage_dir,
+            payload={"stage": "pretraining", "config": model_cfg, "dataset_fingerprint": data_fp, "distributed": dist_cfg},
             outputs=outputs,
+        )
+        return StageState(
+            name="pretraining", fingerprint=fingerprint, stage_dir=str(stage_dir), reused=False, outputs=outputs
         )
 
     def _run_training_classical(
@@ -1700,7 +2036,7 @@ class PipelineRunner:
                     step=epoch,
                 )
 
-        # Test metrics — aggregate (both fixed and tuned thresholds)
+        # Test metrics: aggregate (both fixed and tuned thresholds)
         test_summary: dict[str, float | int] = {}
         for suffix, src in [("fixed", test_fixed), ("tuned", test_tuned)]:
             for key in ("f1_micro", "f1_macro", "pr_auc_macro", "balanced_acc_macro",

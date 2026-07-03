@@ -145,7 +145,7 @@ def build_loss_fn(
     Never apply both simultaneously to the same labels.
 
     Args:
-        loss_name: One of ``"weighted_bce"`` or ``"focal"``.
+        loss_name: One of ``"bce"``, ``"weighted_bce"`` or ``"focal"``.
         train_ds: Training dataset (list of PyG Data objects).
         num_labels: Number of labels per sample.
         device: Device for the returned module and its buffers.
@@ -159,6 +159,11 @@ def build_loss_fn(
     Raises:
         ValueError: If ``loss_name`` is not a recognised option.
     """
+    # plain BCE: a proper scoring rule, so soft targets (shares of positive
+    # reviews) are fitted as probabilities; no class weights
+    if loss_name == "bce":
+        return nn.BCEWithLogitsLoss().to(device)
+
     class_weights = compute_class_weights(train_ds, num_labels, device)
 
     if loss_name == "weighted_bce":
@@ -172,5 +177,5 @@ def build_loss_fn(
         ).to(device)
 
     raise ValueError(
-        f"Unknown loss function {loss_name!r}. Valid options: 'weighted_bce', 'focal'."
+        f"Unknown loss function {loss_name!r}. Valid options: 'bce', 'weighted_bce', 'focal'."
     )

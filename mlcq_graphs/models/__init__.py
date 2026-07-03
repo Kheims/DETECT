@@ -18,6 +18,8 @@ from mlcq_graphs.models.registry import MODEL_REGISTRY, get_model, register_mode
 from mlcq_graphs.models.gat import GATGraphClassifier
 from mlcq_graphs.models.gcn import GCNGraphClassifier
 from mlcq_graphs.models.graphsage import GraphSAGEClassifier
+from mlcq_graphs.models.node_mlp import NodeMLPClassifier
+from mlcq_graphs.models.rgcn import RGCNGraphClassifier
 
 __all__ = [
     "BaseGraphClassifier",
@@ -27,4 +29,6 @@ __all__ = [
     "GCNGraphClassifier",
     "GATGraphClassifier",
     "GraphSAGEClassifier",
+    "NodeMLPClassifier",
+    "RGCNGraphClassifier",
 ]

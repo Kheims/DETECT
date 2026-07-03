@@ -409,7 +409,9 @@ class Trainer:
         for batch in loader:
             batch = batch.to(self.device)
             logits = self.model(batch)
-            y = batch.y.view(-1, num_labels).float()
+            # soft training target (share of positive reviews) when attached
+            y_soft = getattr(batch, "y_soft", None)
+            y = (y_soft if y_soft is not None else batch.y).view(-1, num_labels).float()
 
             loss = self.loss_fn(logits, y)
             scaled_loss = loss / self.grad_accum_steps

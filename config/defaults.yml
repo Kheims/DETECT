@@ -74,6 +74,9 @@ training:
   gat_num_heads: 4
   graphsage_aggregation: mean
   gat_max_nodes_per_batch: 12000
+  # Graph readout: mean | max | add | mean_max | attention | mean_attention | set2set
+  pooling: mean
+  set2set_steps: 3
   # Loss function selection
   loss: focal
   focal_loss:

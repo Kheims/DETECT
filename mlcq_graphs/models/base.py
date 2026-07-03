@@ -4,7 +4,10 @@ from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch_geometric.data import Data
+
+from mlcq_graphs.models.readout import GraphReadout
 
 
 class BaseGraphClassifier(ABC, nn.Module):
@@ -28,6 +31,10 @@ class BaseGraphClassifier(ABC, nn.Module):
         use_type_features: bool = True,
         use_numeric_features: bool = True,
         use_token_features: bool = False,
+        pooling: str = "mean",
+        set2set_steps: int = 3,
+        subset_pooling: bool = False,
+        num_graph_feats: int = 0,
     ) -> None:
         """Initialize base graph classifier.
 
@@ -43,6 +50,10 @@ class BaseGraphClassifier(ABC, nn.Module):
             use_type_features: Whether to use type embeddings
             use_numeric_features: Whether to use numeric features
             use_token_features: Whether to use token features
+            pooling: Graph readout mode (see mlcq_graphs.models.readout)
+            set2set_steps: Processing steps when pooling is set2set
+            subset_pooling: Also pool over the nodes flagged by data.pool_mask
+            num_graph_feats: Size of data.graph_feat, concatenated after readout
 
         Raises:
             ValueError: If no feature sources are enabled or num_layers < 1
@@ -68,6 +79,10 @@ class BaseGraphClassifier(ABC, nn.Module):
         self.num_labels = num_labels
         self.dropout = dropout
         self.num_layers = num_layers
+        self.pooling = pooling
+        self.set2set_steps = set2set_steps
+        self.subset_pooling = subset_pooling
+        self.num_graph_feats = num_graph_feats
 
         # Set up type embeddings if enabled
         self.type_emb = nn.Embedding(num_node_types, type_emb_dim) if use_type_features else None
@@ -117,11 +132,28 @@ class BaseGraphClassifier(ABC, nn.Module):
         x = feature_parts[0] if len(feature_parts) == 1 else torch.cat(feature_parts, dim=-1)
         return x
 
-    @abstractmethod
-    def forward(self, data: Data) -> torch.Tensor:
-        """Forward pass through the model.
+    def build_head(self) -> None:
+        """Create the readout and the classifier head. Subclasses call this
+        after their message-passing layers are built."""
+        self.readout = GraphReadout(
+            self.pooling, self.hidden_dim, self.set2set_steps, self.subset_pooling
+        )
+        self.lin1 = nn.Linear(self.readout.out_dim + self.num_graph_feats, self.hidden_dim)
+        self.lin2 = nn.Linear(self.hidden_dim, self.num_labels)
 
-        Subclasses implement architecture-specific message passing.
+    @abstractmethod
+    def encode_nodes(self, data: Data) -> torch.Tensor:
+        """Architecture-specific message passing.
+
+        Args:
+            data: PyG Data object
+
+        Returns:
+            Node embeddings [num_nodes, hidden_dim]
+        """
+
+    def forward(self, data: Data) -> torch.Tensor:
+        """Node encoding, graph readout and classification.
 
         Args:
             data: PyG Data object
@@ -129,4 +161,11 @@ class BaseGraphClassifier(ABC, nn.Module):
         Returns:
             Logits tensor [batch_size, num_labels]
         """
-        pass
+        x = self.encode_nodes(data)
+        g = self.readout(x, data.batch, getattr(data, "pool_mask", None))
+        if self.num_graph_feats:
+            g = torch.cat([g, data.graph_feat.view(g.size(0), -1)], dim=-1)
+        g = self.lin1(g)
+        g = F.relu(g)
+        g = F.dropout(g, p=self.dropout, training=self.training)
+        return self.lin2(g)

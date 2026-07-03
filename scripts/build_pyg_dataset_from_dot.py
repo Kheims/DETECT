@@ -101,6 +101,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow dot-dir scan when manifest is missing or empty.",
     )
+    parser.add_argument(
+        "--store-edge-types",
+        action="store_true",
+        help="Store data.edge_type, the index of each edge type in sorted(--edge-types).",
+    )
+    parser.add_argument(
+        "--allow-missing-labels",
+        action="store_true",
+        help="Unlabelled corpora (from-dir construction): use all-false labels.",
+    )
+    parser.add_argument(
+        "--store-source-path",
+        action="store_true",
+        help="Keep the relative source path of from-dir graphs in data.source_path.",
+    )
     return parser.parse_args()
 
 
@@ -403,6 +418,8 @@ def main() -> None:
     }
     if not keep_edge_types:
         raise ValueError("--edge-types must include at least one edge type.")
+    edge_type_order = sorted(keep_edge_types)
+    edge_type_id = {name: i for i, name in enumerate(edge_type_order)}
 
     rows = load_rows_from_manifest(args.manifest_path)
     source_mode = "manifest"
@@ -458,12 +475,14 @@ def main() -> None:
 
             id_to_idx = {node.dot_id: idx for idx, node in enumerate(ordered_nodes)}
             edge_pairs: list[tuple[int, int]] = []
+            edge_type_ids: list[int] = []
             for src_dot, dst_dot, edge_type in edges_raw:
                 if edge_type not in keep_edge_types:
                     continue
                 if src_dot not in id_to_idx or dst_dot not in id_to_idx:
                     continue
                 edge_pairs.append((id_to_idx[src_dot], id_to_idx[dst_dot]))
+                edge_type_ids.append(edge_type_id[edge_type])
 
             if edge_pairs:
                 edge_index = torch.tensor(edge_pairs, dtype=torch.long).t().contiguous()
@@ -472,6 +491,8 @@ def main() -> None:
 
             y_raw_obj = row.get("y", [])
             y_raw = y_raw_obj if isinstance(y_raw_obj, list) else []
+            if not y_raw and args.allow_missing_labels:
+                y_raw = [False] * len(LABEL_ORDER)
             if len(y_raw) != len(LABEL_ORDER):
                 raise ValueError(
                     f"Unexpected y length for json_index={row.get('json_index')}: {len(y_raw)}"
@@ -485,6 +506,10 @@ def main() -> None:
                 type_id=type_id_tensor,
             )
             graph.json_index = safe_int(row.get("json_index"), -1)
+            if args.store_source_path and row.get("input_rel_path"):
+                graph.source_path = str(row["input_rel_path"])
+            if args.store_edge_types:
+                graph.edge_type = torch.tensor(edge_type_ids, dtype=torch.long)
             dataset.append(graph)
 
         if pbar is not None:
@@ -539,6 +564,7 @@ def main() -> None:
         "node_type_vocab_path": str(args.node_type_vocab_out),
         "label_order": LABEL_ORDER,
         "kept_edge_types": sorted(keep_edge_types),
+        "edge_type_order": edge_type_order if args.store_edge_types else None,
         "num_graphs": len(dataset),
         "missing_dot_files": missing_dot,
         "elapsed_sec": round(elapsed_total, 3),

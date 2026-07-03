@@ -2,6 +2,7 @@
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
@@ -12,6 +13,14 @@ from xgboost import XGBClassifier
 
 
 CLASSICAL_MODELS = {
+    "logistic_regression": lambda cfg: MultiOutputClassifier(
+        LogisticRegression(
+            C=cfg.get("C", 1.0),
+            class_weight=cfg.get("class_weight", "balanced"),
+            max_iter=cfg.get("max_iter", 2000),
+            random_state=cfg.get("seed", 42),
+        )
+    ),
     "random_forest": lambda cfg: MultiOutputClassifier(
         RandomForestClassifier(
             n_estimators=cfg.get("n_estimators", 100),

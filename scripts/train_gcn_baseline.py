@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import math
 import random
+import re
 import shlex
 import sys
 import time
@@ -28,7 +30,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from mlcq_graphs.constants import LABEL_ORDER
 from mlcq_graphs.evaluation import evaluate_full
+from mlcq_graphs.evaluation.cv import prediction_rows, write_jsonl
 from mlcq_graphs.models import get_model
+from mlcq_graphs.models.hybrid import (
+    HybridClassifier,
+    SeqAttentionEncoder,
+    build_vocab,
+    encode_tokens,
+    tokenize_code,
+)
 from mlcq_graphs.training import Trainer, TrainResult, build_loss_fn
 
 
@@ -42,6 +52,43 @@ class DatasetSummary:
     zero_label_graphs: int
     node_stats: dict[str, float | int]
     edge_stats: dict[str, float | int]
+
+
+@dataclass
+class LoadedGraphs:
+    """Graphs of a run with their node and graph features, before the split."""
+
+    dataset: list[Data]
+    edge_type_mode: str
+    num_relations: int
+    graph_feature_names: list[str]
+    graph_feature_stats: dict[str, int] | None
+    pool_subset_types: list[str]
+    pool_mask_stats: dict[str, Any] | None
+    pretrained_ckpt: dict[str, Any] | None
+    pretrained_info: dict[str, Any] | None
+    use_token_features: bool
+    token_feature_dim: int
+    token_feature_stats: dict[str, int | float] | None
+
+
+FEATURE_MODES = ("type_numeric", "type_only", "numeric_only")
+NO_TOKENS_SUFFIX = "_no_tokens"
+
+
+def parse_feature_mode(feature_mode: str) -> tuple[bool, bool, bool]:
+    """(use_type, use_numeric, allow_tokens) for a feature_mode.
+
+    type_numeric, type_only and numeric_only select the node type embedding
+    and the numeric node features (data.x). The Word2Vec token vectors are
+    added to any of them whenever token_vectors_path is set (token encoder
+    stage enabled). The suffix "_no_tokens" (e.g. type_only_no_tokens) leaves
+    the token vectors out even then, so one grid key can switch them off.
+    """
+    base = feature_mode.removesuffix(NO_TOKENS_SUFFIX)
+    if base not in FEATURE_MODES:
+        raise ValueError(f"Unknown feature_mode: {feature_mode}")
+    return base in {"type_numeric", "type_only"}, base in {"type_numeric", "numeric_only"}, base == feature_mode
 
 
 class DynamicBudgetBatchSampler(Sampler[list[int]]):
@@ -213,7 +260,18 @@ def load_dataset(
     num_labels: int,
     max_graphs: int | None,
     to_undirected_edges: bool,
+    edge_type_mode: str = "ignore",
 ) -> list[Data]:
+    """Load the PyG dataset.
+
+    edge_type_mode:
+        ignore: drop data.edge_type (if any) and make edges undirected when asked
+        typed_reverse: keep data.edge_type and add each edge reversed with its own
+            type (t + R, R being the number of stored edge types), so direction is
+            kept as a relation instead of being merged by to_undirected
+    """
+    if edge_type_mode not in {"ignore", "typed_reverse"}:
+        raise ValueError(f"Unknown edge_type_mode: {edge_type_mode}")
     dataset_obj = torch.load(dataset_path, weights_only=False)
     if not isinstance(dataset_obj, list):
         raise TypeError("Expected dataset file to contain a list[Data].")
@@ -228,14 +286,147 @@ def load_dataset(
         data.type_id = data.type_id.view(-1).long()
         data.x = data.x.float()
 
-        if to_undirected_edges:
-            data.edge_index = to_undirected(data.edge_index, num_nodes=data.num_nodes)
+        if edge_type_mode == "typed_reverse":
+            if getattr(data, "edge_type", None) is None:
+                raise ValueError("edge_type_mode=typed_reverse needs dataset.store_edge_types: true")
+        else:
+            if hasattr(data, "edge_type"):
+                del data.edge_type
+            if to_undirected_edges:
+                data.edge_index = to_undirected(data.edge_index, num_nodes=data.num_nodes)
 
         dataset.append(data)
 
     if not dataset:
         raise ValueError("Loaded dataset is empty.")
+
+    if edge_type_mode == "typed_reverse":
+        num_base = max(int(d.edge_type.max().item()) for d in dataset if d.edge_type.numel()) + 1
+        for data in dataset:
+            data.edge_index = torch.cat([data.edge_index, data.edge_index.flip(0)], dim=1)
+            data.edge_type = torch.cat([data.edge_type, data.edge_type + num_base])
     return dataset
+
+
+def replace_labels(dataset: list[Data], labels_json: Path, num_labels: int) -> None:
+    """Replace data.y by the y vector of the same json_index in labels_json
+    (for instance the labels recomputed from the Zenodo reviews). The snippets
+    must be the ones the graphs were built from."""
+    entries = json.loads(labels_json.read_text())
+    for data in dataset:
+        y = entries[int(data.json_index)]["y"]
+        if len(y) != num_labels:
+            raise ValueError(f"{labels_json}: expected {num_labels} labels, got {len(y)}")
+        data.y = torch.tensor(y, dtype=data.y.dtype)
+    counts = label_matrix(dataset, num_labels).sum(dim=0).tolist()
+    print(f"[labels] replaced from {labels_json}: positives per label {counts}")
+
+
+def attach_review_shares(dataset: list[Data], shares_json: Path, num_labels: int) -> None:
+    """Attach data.y_soft [1, num_labels], the share of positive reviews of each
+    (snippet, smell) (scripts/data/build_review_shares.py). The Trainer fits y_soft
+    when present. data.y (the consensus label) stays the target of early
+    stopping, threshold tuning and every reported metric."""
+    shares = json.loads(shares_json.read_text())
+    if list(shares["meta"]["label_order"])[:num_labels] != list(SMELL_LABELS)[:num_labels]:
+        raise ValueError(f"{shares_json}: label order {shares['meta']['label_order']} differs from {SMELL_LABELS}")
+    for data in dataset:
+        j = int(data.json_index)
+        soft = shares["share"][j][:num_labels]
+        hard = data.y.view(-1)[:num_labels].tolist()
+        # unanimous reviews must give the consensus label (the other cases are
+        # checked by build_review_shares.py against the upper median)
+        for s, h, n in zip(soft, hard, shares["n_reviewers"][j][:num_labels]):
+            if n > 0 and ((s == 1.0 and h == 0) or (s == 0.0 and h == 1)):
+                raise ValueError(f"json_index {j}: share {soft} contradicts the label {hard}")
+        data.y_soft = torch.tensor([soft], dtype=torch.float32)
+    mixed = sum(any(0.0 < s < 1.0 for s in d.y_soft.view(-1).tolist()) for d in dataset)
+    print(f"[labels] training target: shares of positive reviews from {shares_json} "
+          f"({mixed} of {len(dataset)} snippets have a share strictly between 0 and 1)")
+
+
+def attach_sequences(cfg: dict[str, Any], dataset: list[Data], train_ds: list[Data]) -> dict[str, Any]:
+    """Attach data.seq_ids [1, max_tokens] to every graph. The vocabulary is
+    built on the training snippets only."""
+    source = cfg.get("seq_source_json") or cfg.get("split_group_json")
+    if source is None:
+        raise ValueError("hybrid_branch needs seq_source_json (or split_group_json)")
+    entries = json.loads(Path(str(source)).read_text())
+    max_tokens = int(cfg.get("seq_max_tokens", 512))
+    tokens = {int(d.json_index): tokenize_code(entries[int(d.json_index)]["code_snippet"], max_tokens) for d in dataset}
+    vocab = build_vocab(
+        [tokens[int(d.json_index)] for d in train_ds],
+        min_freq=int(cfg.get("seq_min_freq", 2)),
+        max_vocab=int(cfg.get("seq_max_vocab", 10000)),
+    )
+    unknown = total = 0
+    for data in dataset:
+        toks = tokens[int(data.json_index)]
+        data.seq_ids = encode_tokens(toks, vocab, max_tokens)
+        total += len(toks)
+        unknown += sum(tok not in vocab for tok in toks)
+    stats = {"vocab_size": len(vocab), "max_tokens": max_tokens, "unknown_token_fraction": unknown / max(total, 1)}
+    print(f"[seq] vocab={len(vocab)} max_tokens={max_tokens} unknown={stats['unknown_token_fraction']:.4f}")
+    return stats
+
+
+def attach_graph_features(
+    dataset: list[Data],
+    spec: dict[str, Any],
+    project_root: Path,
+) -> tuple[list[str], dict[str, int]]:
+    """Attach data.graph_feat [1, F] from a CSV keyed by json_index.
+
+    spec keys: path, key (column matching json_index), columns (list), log1p (bool).
+    Values are standardised later with train-split statistics.
+    """
+    import csv
+
+    path = Path(str(spec["path"]))
+    if not path.is_absolute():
+        path = project_root / path
+    key = str(spec.get("key", "sample_idx"))
+    columns = [str(c) for c in spec["columns"]]
+    use_log = bool(spec.get("log1p", True))
+
+    table: dict[int, list[float]] = {}
+    with path.open() as fh:
+        for row in csv.DictReader(fh):
+            table[int(row[key])] = [float(row[c]) for c in columns]
+
+    missing = 0
+    for data in dataset:
+        values = table.get(int(data.json_index))
+        if values is None:
+            missing += 1
+            values = [0.0] * len(columns)
+        feat = torch.tensor(values, dtype=torch.float32)
+        if use_log:
+            feat = torch.sign(feat) * torch.log1p(feat.abs())
+        data.graph_feat = feat.view(1, -1)
+    return columns, {"rows": len(table), "missing": missing}
+
+
+def standardise_graph_features(train_ds: list[Data], all_ds: list[Data]) -> None:
+    stacked = torch.cat([d.graph_feat for d in train_ds], dim=0)
+    mean = stacked.mean(dim=0, keepdim=True)
+    std = stacked.std(dim=0, keepdim=True).clamp(min=1e-6)
+    for data in all_ds:
+        data.graph_feat = (data.graph_feat - mean) / std
+
+
+def attach_pool_mask(dataset: list[Data], vocab_path: Path, type_names: list[str]) -> dict[str, Any]:
+    """Flag the nodes whose type is in type_names (data.pool_mask)."""
+    vocab = json.loads(vocab_path.read_text())
+    ids = sorted(vocab[name] for name in type_names if name in vocab)
+    if not ids:
+        raise ValueError(f"None of {type_names} is in the node type vocabulary {vocab_path}")
+    id_tensor = torch.tensor(ids, dtype=torch.long)
+    with_subset = 0
+    for data in dataset:
+        data.pool_mask = torch.isin(data.type_id, id_tensor)
+        with_subset += int(bool(data.pool_mask.any()))
+    return {"type_ids": ids, "graphs_with_subset_nodes": with_subset}
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -274,6 +465,39 @@ def _parse_dot_attrs(attr_str: str) -> dict[str, object]:
     return attrs
 
 
+_DOT_ATTR_RE = re.compile(r'(\w+)=(?:"((?:[^"\\]|\\.)*)"|(\S+))')
+_POSIX_DQ_ESCAPE_RE = re.compile(r'\\([\\"$`])')
+
+
+def _parse_dot_attrs_fast(attr_str: str) -> dict[str, object] | None:
+    """Regex equivalent of _parse_dot_attrs (shlex in POSIX mode), about an
+    order of magnitude faster. Inside double quotes POSIX shlex only removes
+    the backslash before \\, ", $ and `; other escapes are kept verbatim.
+    Returns None when the line does not match, so callers can fall back."""
+    attrs: dict[str, object] = {}
+    consumed = 0
+    for match in _DOT_ATTR_RE.finditer(attr_str):
+        consumed += len(match.group(0))
+        key, quoted, bare = match.group(1), match.group(2), match.group(3)
+        if quoted is not None:
+            value = _POSIX_DQ_ESCAPE_RE.sub(r"\1", quoted)
+        else:
+            value = bare
+        lowered = value.lower()
+        if lowered == "true":
+            attrs[key] = True
+        elif lowered == "false":
+            attrs[key] = False
+        else:
+            try:
+                attrs[key] = int(value)
+            except ValueError:
+                attrs[key] = value
+    if consumed + attr_str.count(" ") < len(attr_str.strip()):
+        return None
+    return attrs
+
+
 def _load_token_rows_from_dot(dot_path: Path) -> list[tuple[int, str, str]]:
     rows: list[tuple[int, str, str]] = []
     for raw_line in dot_path.read_text().splitlines():
@@ -285,7 +509,9 @@ def _load_token_rows_from_dot(dot_path: Path) -> list[tuple[int, str, str]]:
 
         left = line.index("[")
         right = line.rindex("]")
-        attrs = _parse_dot_attrs(line[left + 1 : right])
+        attrs = _parse_dot_attrs_fast(line[left + 1 : right])
+        if attrs is None:
+            attrs = _parse_dot_attrs(line[left + 1 : right])
 
         node_index = _safe_int(attrs.get("node_index", -1), -1)
         if node_index < 0:
@@ -425,6 +651,152 @@ def attach_token_vectors(
 
 def label_matrix(dataset: list[Data], num_labels: int) -> torch.Tensor:
     return torch.stack([d.y.view(-1)[:num_labels] for d in dataset]).int()
+
+
+def split_group_level(
+    dataset: list[Data],
+    groups: list[str],
+    train_ratio: float,
+    val_ratio: float,
+    seed: int,
+    num_labels: int,
+) -> tuple[list[Data], list[Data], list[Data], dict[str, list[int]]]:
+    """Split whole groups (e.g. projects) so that no group spans two splits.
+
+    Groups are visited by decreasing number of positives (random tie-break
+    from `seed`) and each goes to the split that most needs its positives,
+    among the splits that still have room; groups without positives fill the
+    split with the most room left.
+    """
+    y = label_matrix(dataset, num_labels).float()
+    n = y.size(0)
+    members: dict[str, list[int]] = {}
+    for idx, group in enumerate(groups):
+        members.setdefault(group, []).append(idx)
+    names = sorted(members)
+    gen = torch.Generator().manual_seed(seed)
+    tiebreak = torch.rand(len(names), generator=gen)
+    pos = torch.stack([y[members[g]].sum(dim=0) for g in names])
+    order = sorted(range(len(names)), key=lambda i: (-float(pos[i].sum()), float(tiebreak[i])))
+
+    sizes = {"train": train_ratio * n, "val": val_ratio * n, "test": (1 - train_ratio - val_ratio) * n}
+    total_pos = y.sum(dim=0)
+    target = {split: total_pos * (size / n) for split, size in sizes.items()}
+    counts = {split: torch.zeros(num_labels) for split in sizes}
+    filled = {split: 0 for split in sizes}
+    split_indices: dict[str, list[int]] = {"train": [], "val": [], "test": []}
+
+    for gi in order:
+        idx = members[names[gi]]
+        vec = pos[gi]
+        room = {split: sizes[split] - filled[split] for split in sizes}
+        open_splits = [split for split in sizes if room[split] > 0] or list(sizes)
+        if float(vec.sum()) > 0:
+            chosen = max(
+                open_splits,
+                key=lambda split: (float(((target[split] - counts[split]).clamp(min=0) * vec).sum()), room[split]),
+            )
+        else:
+            chosen = max(open_splits, key=lambda split: room[split] / sizes[split])
+        split_indices[chosen].extend(idx)
+        counts[chosen] += vec
+        filled[chosen] += len(idx)
+
+    train_ds = [dataset[i] for i in split_indices["train"]]
+    val_ds = [dataset[i] for i in split_indices["val"]]
+    test_ds = [dataset[i] for i in split_indices["test"]]
+    return train_ds, val_ds, test_ds, split_indices
+
+
+def split_kfold(
+    dataset: list[Data],
+    groups: list[str] | None,
+    n_folds: int,
+    fold: int,
+    val_ratio: float,
+    seed: int,
+    num_labels: int,
+) -> tuple[list[Data], list[Data], list[Data], dict[str, list[int]]]:
+    """Fold `fold` of a stratified (optionally group-aware) K-fold, built like
+    scripts/train_classical.py: same multi-label stratification column and
+    seed as random_state. The validation set is carved from the training part
+    with the same splitter type (about val_ratio of the whole dataset)."""
+    from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
+
+    y = label_matrix(dataset, num_labels).numpy()
+    strat = np.array([hash(tuple(int(v) for v in row)) % (2 ** 31) for row in y])
+    index = np.arange(len(dataset))
+
+    def make(n_splits: int):
+        if groups is not None:
+            return StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+
+    group_arr = np.array(groups) if groups is not None else None
+    outer = list(make(n_folds).split(index, strat, group_arr))
+    if not 0 <= fold < n_folds:
+        raise ValueError(f"cv_fold must be in [0, {n_folds})")
+    train_full, test = outer[fold]
+    inner_splits = max(2, int(round(len(train_full) / max(1.0, val_ratio * len(dataset)))))
+    inner_groups = group_arr[train_full] if group_arr is not None else None
+    inner_train, inner_val = next(make(inner_splits).split(train_full, strat[train_full], inner_groups))
+    split_indices = {
+        "train": [int(i) for i in train_full[inner_train]],
+        "val": [int(i) for i in train_full[inner_val]],
+        "test": [int(i) for i in test],
+    }
+    train_ds = [dataset[i] for i in split_indices["train"]]
+    val_ds = [dataset[i] for i in split_indices["val"]]
+    test_ds = [dataset[i] for i in split_indices["test"]]
+    return train_ds, val_ds, test_ds, split_indices
+
+
+def subsample_train(
+    train_ds: list[Data],
+    train_indices: list[int],
+    fraction: float,
+    seed: int,
+    num_labels: int,
+) -> tuple[list[Data], list[int]]:
+    """Stratified random subset of the training part (learning curves).
+
+    Strata are the label combinations, encoded with the same hash column as
+    split_kfold. Each stratum is shuffled with a generator seeded by `seed`
+    and keeps its first floor(fraction * size + u) samples, u uniform in
+    [0, 1) per stratum: the expected size is exactly fraction * size, rare
+    strata are not rounded away, and for a given seed and fold the subsets of
+    increasing fractions are nested. Returns the subset (in the original
+    order) and its dataset positions.
+    """
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(f"train_fraction must be in (0, 1], got {fraction}")
+    y = label_matrix(train_ds, num_labels).numpy()
+    strat = np.array([hash(tuple(int(v) for v in row)) % (2 ** 31) for row in y])
+    rng = np.random.default_rng(seed)
+    keep: list[int] = []
+    for value in np.unique(strat):
+        members = rng.permutation(np.flatnonzero(strat == value))
+        count = int(math.floor(fraction * len(members) + rng.random()))
+        keep.extend(int(i) for i in members[:count])
+    keep.sort()
+    if not keep:
+        raise ValueError(f"train_fraction={fraction} leaves no training sample")
+    return [train_ds[i] for i in keep], [int(train_indices[i]) for i in keep]
+
+
+def epoch_graphs(train_ds: list[Data], epoch_size: int, seed: int, epoch: int) -> list[Data]:
+    """Training graphs of one epoch. Without subsampling (epoch_size equal to
+    the training part) this is train_ds itself. With a subset, the epoch holds
+    epoch_size graphs: every graph appears floor or ceil of
+    epoch_size / len(train_ds) times, the extra copies drawn again at each
+    epoch (seeded by seed and epoch), so a run on 10% of the data gets as many
+    optimizer steps per epoch as the full run instead of a tenth of them."""
+    if epoch_size == len(train_ds):
+        return train_ds
+    rng = np.random.default_rng([seed, epoch])
+    repeats = -(-epoch_size // len(train_ds))
+    order = np.concatenate([rng.permutation(len(train_ds)) for _ in range(repeats)])[:epoch_size]
+    return [train_ds[i] for i in order]
 
 
 def split_sample_level(
@@ -575,7 +947,10 @@ def save_split_indices(
         "dataset_size": int(dataset_size),
         "split_indices": split_indices,
     }
-    split_path.write_text(json.dumps(payload, indent=2))
+    # Write then rename so that concurrent shards never read a partial file
+    tmp_path = split_path.with_suffix(f".{os.getpid()}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2))
+    os.replace(tmp_path, split_path)
 
 
 def build_loader(
@@ -750,6 +1125,62 @@ def tune_thresholds(
     return thresholds
 
 
+def loader_json_indices(loader: DataLoader, dataset: list[Data]) -> list[int]:
+    """json_index of the graphs, in the order a non-shuffled loader yields them."""
+    return [int(dataset[i].json_index) for batch in loader.batch_sampler for i in batch]
+
+
+def prediction_model_name(cfg: dict[str, Any], model_info: dict[str, Any]) -> str:
+    """Model name of the predictions.jsonl rows: prediction_model_name from the
+    run config when set, else gnn_<architecture>_<node feature sources>, with
+    _tf<fraction> when the training part was subsampled."""
+    if cfg.get("prediction_model_name"):
+        return str(cfg["prediction_model_name"])
+    sources = [
+        name
+        for name, used in (
+            ("type", model_info["use_type_features"]),
+            ("numeric", model_info["use_numeric_features"]),
+            ("token", model_info["use_token_features"]),
+        )
+        if used
+    ]
+    name = f"gnn_{model_info['architecture']}_{'+'.join(sources)}"
+    fraction = float(cfg.get("train_fraction", 1.0))
+    if fraction != 1.0:
+        name += f"_tf{fraction:g}"
+    return name
+
+
+def write_predictions(
+    path: Path,
+    *,
+    model_name: str,
+    cfg: dict[str, Any],
+    parts: list[tuple[str, list[int], np.ndarray, np.ndarray]],
+) -> int:
+    """predictions.jsonl in the shared schema (mlcq_graphs.evaluation.cv), one
+    row per (part, sample); parts are (name, json indices, labels, probabilities)."""
+    rows: list[dict[str, Any]] = []
+    for part, json_indices, y, probs in parts:
+        if len(json_indices) != len(y) or len(y) != len(probs):
+            raise ValueError(f"{part}: {len(json_indices)} indices, {len(y)} labels, {len(probs)} predictions")
+        rows.extend(
+            prediction_rows(
+                model=model_name,
+                strategy=str(cfg.get("split_strategy", "random")),
+                seed=int(cfg.get("seed", 42)),
+                fold=int(cfg.get("cv_fold", 0)),
+                part=part,
+                indices=np.asarray(json_indices, dtype=np.int64),
+                y=y,
+                probs=probs,
+            )
+        )
+    write_jsonl(path, rows)
+    return len(rows)
+
+
 def select_device(device_arg: str) -> torch.device:
     if device_arg == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -816,8 +1247,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument(
         "--feature-mode",
-        choices=["type_numeric", "type_only", "numeric_only"],
+        choices=[*FEATURE_MODES, *(f"{mode}{NO_TOKENS_SUFFIX}" for mode in FEATURE_MODES)],
         default="type_numeric",
+        help="Node features; token vectors are added when --token-vectors-path is set, "
+        "unless the mode ends with _no_tokens.",
+    )
+    parser.add_argument(
+        "--train-fraction",
+        type=float,
+        default=1.0,
+        help="Train on a stratified subset of the training part (validation and test unchanged); "
+        "epochs keep the size of the full training part.",
+    )
+    parser.add_argument(
+        "--save-predictions",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write predictions.jsonl (validation and test probabilities) in the run directory.",
     )
     parser.add_argument(
         "--architecture",
@@ -909,6 +1355,315 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def load_graphs(cfg: dict[str, Any]) -> LoadedGraphs:
+    """Load the graphs and attach the node and graph features of a run
+    (everything that happens before the split). Shared with
+    scripts/cv/export_gnn_predictions.py."""
+    dataset_path = Path(str(cfg.get("dataset_path", "artifacts/cache/dataset/latest/dataset.pt")))
+    num_labels = int(cfg.get("num_labels", 4))
+    _, _, allow_tokens = parse_feature_mode(str(cfg.get("feature_mode", "type_numeric")))
+    max_graphs = cfg.get("max_graphs")
+    if max_graphs is not None:
+        max_graphs = int(max_graphs)
+    to_undirected_edges = bool(cfg.get("to_undirected", True))
+
+    edge_type_mode = str(cfg.get("edge_type_mode", "ignore"))
+    dataset = load_dataset(
+        dataset_path=dataset_path,
+        num_labels=num_labels,
+        max_graphs=max_graphs,
+        to_undirected_edges=to_undirected_edges,
+        edge_type_mode=edge_type_mode,
+    )
+    labels_json = cfg.get("labels_json")
+    if labels_json:
+        replace_labels(dataset, Path(str(labels_json)), num_labels)
+    train_target = str(cfg.get("train_target", "consensus"))
+    if train_target == "review_share":
+        attach_review_shares(dataset, Path(str(cfg["review_shares_json"])), num_labels)
+    elif train_target != "consensus":
+        raise ValueError(f"unknown train_target {train_target!r} (consensus | review_share)")
+    num_relations = (
+        max(int(d.edge_type.max().item()) for d in dataset if d.edge_type.numel()) + 1
+        if edge_type_mode == "typed_reverse"
+        else 1
+    )
+
+    project_root = Path(str(cfg.get("project_root", Path.cwd())))
+    graph_features_spec = cfg.get("graph_features")
+    graph_feature_names: list[str] = []
+    graph_feature_stats: dict[str, int] | None = None
+    if graph_features_spec:
+        graph_feature_names, graph_feature_stats = attach_graph_features(
+            dataset, graph_features_spec, project_root
+        )
+
+    pool_subset_types = [str(t) for t in (cfg.get("pool_subset_types") or [])]
+    pool_mask_stats: dict[str, Any] | None = None
+    if pool_subset_types:
+        vocab_path = cfg.get("node_type_vocab_path")
+        if vocab_path is None:
+            raise ValueError("pool_subset_types needs node_type_vocab_path")
+        pool_mask_stats = attach_pool_mask(dataset, Path(str(vocab_path)), pool_subset_types)
+
+    # Encoder initialised from self-supervised pre-training: node type ids are
+    # mapped by name onto the pre-training vocabulary (unseen types -> UNK).
+    pretrained_path = cfg.get("pretrained_encoder")
+    pretrained_ckpt: dict[str, Any] | None = None
+    pretrained_info: dict[str, Any] | None = None
+    if pretrained_path:
+        pretrained_ckpt = torch.load(str(pretrained_path), map_location="cpu", weights_only=False)
+        vocab_path = cfg.get("node_type_vocab_path")
+        if vocab_path is None:
+            raise ValueError("pretrained_encoder needs node_type_vocab_path")
+        own_vocab: dict[str, int] = json.loads(Path(str(vocab_path)).read_text())
+        corpus_vocab: dict[str, int] = pretrained_ckpt["node_type_vocab"]
+        unk = int(pretrained_ckpt["unk_token"])
+        remap = torch.full((max(own_vocab.values()) + 1,), unk, dtype=torch.long)
+        for name, idx in own_vocab.items():
+            remap[idx] = corpus_vocab.get(name, unk)
+        unseen_nodes = 0
+        total_nodes = 0
+        for data in dataset:
+            data.type_id = remap[data.type_id]
+            unseen_nodes += int((data.type_id == unk).sum())
+            total_nodes += int(data.num_nodes)
+        pretrained_info = {
+            "path": str(pretrained_path),
+            "epoch": pretrained_ckpt.get("epoch"),
+            "unseen_types": sorted(n for n in own_vocab if n not in corpus_vocab),
+            "unseen_node_fraction": unseen_nodes / max(total_nodes, 1),
+        }
+        for key in ("architecture", "hidden_dim", "num_layers", "type_emb_dim"):
+            expected = pretrained_ckpt[key]
+            actual = cfg.get(key if key != "hidden_dim" else "hidden_dim")
+            if actual is not None and str(actual) != str(expected):
+                raise ValueError(f"pretrained encoder has {key}={expected}, training config has {actual}")
+
+    token_vectors_path = cfg.get("token_vectors_path")
+    manifest_path = cfg.get("manifest_path")
+    use_token_features = token_vectors_path is not None and allow_tokens
+    token_feature_dim = 0
+    token_feature_stats: dict[str, int | float] | None = None
+    if use_token_features:
+        if manifest_path is None:
+            raise ValueError(
+                "manifest_path is required when token_vectors_path is provided."
+            )
+        token_feature_dim, token_feature_stats = attach_token_vectors(
+            dataset=dataset,
+            manifest_path=Path(str(manifest_path)),
+            vectors_path=Path(str(token_vectors_path)),
+            progress_every=int(cfg.get("token_progress_every", 200)),
+        )
+    elif token_vectors_path is not None:
+        print(f"[token_features] skipped: feature_mode={cfg.get('feature_mode')} leaves token vectors out")
+    return LoadedGraphs(
+        dataset=dataset,
+        edge_type_mode=edge_type_mode,
+        num_relations=num_relations,
+        graph_feature_names=graph_feature_names,
+        graph_feature_stats=graph_feature_stats,
+        pool_subset_types=pool_subset_types,
+        pool_mask_stats=pool_mask_stats,
+        pretrained_ckpt=pretrained_ckpt,
+        pretrained_info=pretrained_info,
+        use_token_features=use_token_features,
+        token_feature_dim=token_feature_dim,
+        token_feature_stats=token_feature_stats,
+    )
+
+
+def split_graphs(
+    cfg: dict[str, Any],
+    dataset: list[Data],
+    seed: int,
+    num_labels: int,
+) -> tuple[list[Data], list[Data], list[Data], dict[str, list[int]], Path | None]:
+    """Train/val/test split of a run: reuse the cached split file when there
+    is one, otherwise build it with split_strategy and save it."""
+    train_ratio = float(cfg.get("train_ratio", 0.8))
+    val_ratio = float(cfg.get("val_ratio", 0.1))
+    split_path_raw = cfg.get("split_path")
+    split_path = Path(str(split_path_raw)) if split_path_raw is not None else None
+    reuse_split = bool(cfg.get("reuse_split", True))
+    save_split = bool(cfg.get("save_split", True))
+
+    split_indices: dict[str, list[int]]
+    if split_path is not None and reuse_split and split_path.exists():
+        split_indices = load_split_indices(split_path)
+        train_ds, val_ds, test_ds = apply_split_indices(dataset, split_indices)
+    else:
+        split_strategy = str(cfg.get("split_strategy", "random"))
+        groups = None
+        if split_strategy in {"group", "group_kfold"}:
+            group_json = cfg.get("split_group_json")
+            group_key = str(cfg.get("split_group_key", "repo_url"))
+            if group_json is None:
+                raise ValueError(f"split_strategy={split_strategy} needs split_group_json")
+            entries = json.loads(Path(str(group_json)).read_text())
+            groups = [str(entries[int(d.json_index)].get(group_key, "")) for d in dataset]
+        if split_strategy in {"kfold", "group_kfold"}:
+            train_ds, val_ds, test_ds, split_indices = split_kfold(
+                dataset=dataset,
+                groups=groups,
+                n_folds=int(cfg.get("cv_folds", 5)),
+                fold=int(cfg.get("cv_fold", 0)),
+                val_ratio=val_ratio,
+                seed=seed,
+                num_labels=num_labels,
+            )
+        elif split_strategy == "group":
+            train_ds, val_ds, test_ds, split_indices = split_group_level(
+                dataset=dataset,
+                groups=groups,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                seed=seed,
+                num_labels=num_labels,
+            )
+        elif split_strategy == "random":
+            train_ds, val_ds, test_ds, split_indices = split_sample_level(
+                dataset=dataset,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                seed=seed,
+                num_labels=num_labels,
+            )
+        else:
+            raise ValueError(f"Unknown split_strategy: {split_strategy}")
+        if split_path is not None and save_split:
+            save_split_indices(
+                split_path=split_path,
+                split_indices=split_indices,
+                seed=seed,
+                dataset_size=len(dataset),
+            )
+
+    if not train_ds or not val_ds or not test_ds:
+        raise ValueError("One split is empty; adjust split ratios or dataset size.")
+    return train_ds, val_ds, test_ds, split_indices, split_path
+
+
+def build_model(
+    cfg: dict[str, Any],
+    graphs: LoadedGraphs,
+    train_ds: list[Data],
+    num_labels: int,
+) -> tuple[nn.Module, dict[str, Any]]:
+    """Model of a run (on CPU, freshly initialised) and the settings it was
+    built with."""
+    use_token_features = graphs.use_token_features
+    token_feature_dim = graphs.token_feature_dim
+    pretrained_ckpt = graphs.pretrained_ckpt
+    dataset = graphs.dataset
+    edge_type_mode = graphs.edge_type_mode
+    num_relations = graphs.num_relations
+    pool_subset_types = graphs.pool_subset_types
+    graph_feature_names = graphs.graph_feature_names
+    feature_mode = str(cfg.get("feature_mode", "type_numeric"))
+    use_type_features, use_numeric_features, _ = parse_feature_mode(feature_mode)
+
+    if not use_type_features and not use_numeric_features and not use_token_features:
+        raise ValueError("Invalid feature_mode: both feature sources disabled.")
+
+    num_node_types = max(int(d.type_id.max().item()) for d in dataset) + 1
+    if pretrained_ckpt is not None:
+        num_node_types = int(pretrained_ckpt["num_node_types"])
+    num_numeric_feats = int(train_ds[0].x.size(-1)) if use_numeric_features else 0
+
+    architecture = str(cfg.get("architecture", "gcn"))
+    num_layers = int(cfg.get("num_layers", 2))
+    hidden_dim = int(cfg.get("hidden_dim", 256))
+    type_emb_dim = int(cfg.get("type_emb_dim", 128))
+    dropout = float(cfg.get("dropout", 0.2))
+    num_heads = int(cfg.get("num_heads", 4))
+    aggregation = str(cfg.get("aggregation", "mean"))
+
+    pooling = str(cfg.get("pooling", "mean"))
+    set2set_steps = int(cfg.get("set2set_steps", 3))
+
+    arch_kwargs: dict[str, Any] = {
+        "pooling": pooling,
+        "set2set_steps": set2set_steps,
+        "subset_pooling": bool(pool_subset_types),
+        "num_graph_feats": len(graph_feature_names),
+    }
+    if architecture == "rgcn":
+        if edge_type_mode != "typed_reverse":
+            raise ValueError("architecture=rgcn needs training.edge_type_mode: typed_reverse")
+        arch_kwargs["num_relations"] = num_relations
+        num_bases = cfg.get("rgcn_num_bases")
+        arch_kwargs["num_bases"] = int(num_bases) if num_bases is not None else None
+    if architecture == "gat":
+        arch_kwargs["num_heads"] = num_heads
+    elif architecture == "graphsage":
+        arch_kwargs["aggregation"] = aggregation
+
+    model = get_model(
+        architecture,
+        num_node_types=num_node_types,
+        type_emb_dim=type_emb_dim,
+        num_numeric_feats=num_numeric_feats,
+        num_token_feats=token_feature_dim,
+        hidden_dim=hidden_dim,
+        num_labels=num_labels,
+        dropout=dropout,
+        num_layers=num_layers,
+        use_type_features=use_type_features,
+        use_numeric_features=use_numeric_features,
+        use_token_features=use_token_features,
+        **arch_kwargs,
+    )
+    branch = cfg.get("hybrid_branch")
+    if branch:
+        seq = None
+        if branch != "graph":
+            seq = SeqAttentionEncoder(
+                vocab_size=int(cfg["seq_vocab_size"]),
+                embed_dim=int(cfg.get("seq_embed_dim", 128)),
+                hidden_dim=int(cfg.get("seq_hidden_dim", 256)),
+                num_layers=int(cfg.get("seq_num_layers", 2)),
+                dropout=float(cfg.get("seq_dropout", 0.3)),
+                mask_padding=bool(cfg.get("seq_mask_padding", False)),
+            )
+        model = HybridClassifier(
+            branch=str(branch),
+            gnn=model,
+            seq=seq,
+            hidden_dim=hidden_dim,
+            num_labels=num_labels,
+            dropout=dropout,
+        )
+    info = {
+        "hybrid": {
+            "branch": branch,
+            "seq_embed_dim": cfg.get("seq_embed_dim", 128),
+            "seq_hidden_dim": cfg.get("seq_hidden_dim", 256),
+            "seq_num_layers": cfg.get("seq_num_layers", 2),
+            "seq_dropout": cfg.get("seq_dropout", 0.3),
+            "seq_mask_padding": cfg.get("seq_mask_padding", False),
+            "num_parameters": sum(p.numel() for p in model.parameters()),
+        } if branch else None,
+        "feature_mode": feature_mode,
+        "use_type_features": use_type_features,
+        "use_numeric_features": use_numeric_features,
+        "use_token_features": use_token_features,
+        "num_node_types": num_node_types,
+        "num_numeric_feats": num_numeric_feats,
+        "architecture": architecture,
+        "num_layers": num_layers,
+        "hidden_dim": hidden_dim,
+        "type_emb_dim": type_emb_dim,
+        "dropout": dropout,
+        "num_heads": num_heads,
+        "aggregation": aggregation,
+        "pooling": pooling,
+        "set2set_steps": set2set_steps,
+    }
+    return model, info
+
+
 def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str, Any]:
     """Run a complete training trial from a config dict.
 
@@ -935,116 +1690,89 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
     edge_budget = max_edges if max_edges > 0 else None
     eval_edge_budget = eval_max_edges if eval_max_edges > 0 else None
 
-    dataset_path = Path(str(cfg.get("dataset_path", "artifacts/cache/dataset/latest/dataset.pt")))
     num_labels = int(cfg.get("num_labels", 4))
-    max_graphs = cfg.get("max_graphs")
-    if max_graphs is not None:
-        max_graphs = int(max_graphs)
-    to_undirected_edges = bool(cfg.get("to_undirected", True))
+    graphs = load_graphs(cfg)
+    dataset = graphs.dataset
+    edge_type_mode = graphs.edge_type_mode
+    num_relations = graphs.num_relations
+    graph_feature_names = graphs.graph_feature_names
+    graph_feature_stats = graphs.graph_feature_stats
+    pool_subset_types = graphs.pool_subset_types
+    pool_mask_stats = graphs.pool_mask_stats
+    pretrained_info = graphs.pretrained_info
+    pretrained_ckpt = graphs.pretrained_ckpt
+    use_token_features = graphs.use_token_features
+    token_feature_dim = graphs.token_feature_dim
+    token_feature_stats = graphs.token_feature_stats
 
-    dataset = load_dataset(
-        dataset_path=dataset_path,
-        num_labels=num_labels,
-        max_graphs=max_graphs,
-        to_undirected_edges=to_undirected_edges,
-    )
+    train_ds, val_ds, test_ds, split_indices, split_path = split_graphs(cfg, dataset, seed, num_labels)
 
-    token_vectors_path = cfg.get("token_vectors_path")
-    manifest_path = cfg.get("manifest_path")
-    use_token_features = token_vectors_path is not None
-    token_feature_dim = 0
-    token_feature_stats: dict[str, int | float] | None = None
-    if use_token_features:
-        if manifest_path is None:
-            raise ValueError(
-                "manifest_path is required when token_vectors_path is provided."
-            )
-        token_feature_dim, token_feature_stats = attach_token_vectors(
-            dataset=dataset,
-            manifest_path=Path(str(manifest_path)),
-            vectors_path=Path(str(token_vectors_path)),
-            progress_every=int(cfg.get("token_progress_every", 200)),
+    # Learning curves: train on a stratified subset of the training part only,
+    # validation and test parts unchanged (the saved split stays the full one).
+    # An epoch still draws as many graphs as the full training part (see
+    # epoch_graphs), so epochs, patience and early stopping keep the same
+    # number of optimizer steps as the full run.
+    train_fraction = float(cfg.get("train_fraction", 1.0))
+    train_size_full = len(train_ds)
+    train_subset_indices: list[int] | None = None
+    if train_fraction != 1.0:
+        train_ds, train_subset_indices = subsample_train(
+            train_ds, split_indices["train"], train_fraction, seed, num_labels
         )
+        print(f"[train] train_fraction={train_fraction:g} train_size={len(train_ds)}/{train_size_full}")
 
-    train_ratio = float(cfg.get("train_ratio", 0.8))
-    val_ratio = float(cfg.get("val_ratio", 0.1))
-    split_path_raw = cfg.get("split_path")
-    split_path = Path(str(split_path_raw)) if split_path_raw is not None else None
-    reuse_split = bool(cfg.get("reuse_split", True))
-    save_split = bool(cfg.get("save_split", True))
+    if graph_feature_names:
+        standardise_graph_features(train_ds, dataset)
 
-    split_indices: dict[str, list[int]]
-    if split_path is not None and reuse_split and split_path.exists():
-        split_indices = load_split_indices(split_path)
-        train_ds, val_ds, test_ds = apply_split_indices(dataset, split_indices)
-    else:
-        train_ds, val_ds, test_ds, split_indices = split_sample_level(
-            dataset=dataset,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            seed=seed,
-            num_labels=num_labels,
-        )
-        if split_path is not None and save_split:
-            save_split_indices(
-                split_path=split_path,
-                split_indices=split_indices,
-                seed=seed,
-                dataset_size=len(dataset),
-            )
-
-    if not train_ds or not val_ds or not test_ds:
-        raise ValueError("One split is empty; adjust split ratios or dataset size.")
+    seq_stats: dict[str, Any] | None = None
+    if cfg.get("hybrid_branch"):
+        seq_stats = attach_sequences(cfg, dataset, train_ds)
+        cfg = {**cfg, "seq_vocab_size": seq_stats["vocab_size"]}
 
     train_summary = summarize_dataset(train_ds, SMELL_LABELS)
     val_summary = summarize_dataset(val_ds, SMELL_LABELS)
     test_summary = summarize_dataset(test_ds, SMELL_LABELS)
 
-    feature_mode = str(cfg.get("feature_mode", "type_numeric"))
-    use_type_features = feature_mode in {"type_numeric", "type_only"}
-    use_numeric_features = feature_mode in {"type_numeric", "numeric_only"}
-
-    if not use_type_features and not use_numeric_features and not use_token_features:
-        raise ValueError("Invalid feature_mode: both feature sources disabled.")
-
-    num_node_types = max(int(d.type_id.max().item()) for d in dataset) + 1
-    num_numeric_feats = int(train_ds[0].x.size(-1)) if use_numeric_features else 0
-
-    architecture = str(cfg.get("architecture", "gcn"))
-    num_layers = int(cfg.get("num_layers", 2))
-    hidden_dim = int(cfg.get("hidden_dim", 256))
-    type_emb_dim = int(cfg.get("type_emb_dim", 128))
-    dropout = float(cfg.get("dropout", 0.2))
-    num_heads = int(cfg.get("num_heads", 4))
-    aggregation = str(cfg.get("aggregation", "mean"))
+    model, model_info = build_model(cfg, graphs, train_ds, num_labels)
+    model = model.to(device)
+    feature_mode = model_info["feature_mode"]
+    use_type_features = model_info["use_type_features"]
+    use_numeric_features = model_info["use_numeric_features"]
+    num_node_types = model_info["num_node_types"]
+    num_numeric_feats = model_info["num_numeric_feats"]
+    architecture = model_info["architecture"]
+    num_layers = model_info["num_layers"]
+    num_heads = model_info["num_heads"]
+    aggregation = model_info["aggregation"]
+    pooling = model_info["pooling"]
+    set2set_steps = model_info["set2set_steps"]
     loss_name = str(cfg.get("loss", "weighted_bce"))
 
-    arch_kwargs: dict[str, Any] = {}
-    if architecture == "gat":
-        arch_kwargs["num_heads"] = num_heads
-    elif architecture == "graphsage":
-        arch_kwargs["aggregation"] = aggregation
-
-    model = get_model(
-        architecture,
-        num_node_types=num_node_types,
-        type_emb_dim=type_emb_dim,
-        num_numeric_feats=num_numeric_feats,
-        num_token_feats=token_feature_dim,
-        hidden_dim=hidden_dim,
-        num_labels=num_labels,
-        dropout=dropout,
-        num_layers=num_layers,
-        use_type_features=use_type_features,
-        use_numeric_features=use_numeric_features,
-        use_token_features=use_token_features,
-        **arch_kwargs,
-    ).to(device)
+    if pretrained_ckpt is not None:
+        own_state = model.state_dict()
+        loaded, skipped = [], []
+        for key, value in pretrained_ckpt["encoder_state"].items():
+            if key in own_state and own_state[key].shape == value.shape:
+                own_state[key] = value
+                loaded.append(key)
+            else:
+                skipped.append(key)
+        if not loaded:
+            raise ValueError("no pretrained encoder weight matches the model (check feature_mode and token features)")
+        model.load_state_dict(own_state)
+        pretrained_info["loaded_keys"] = loaded
+        pretrained_info["skipped_keys"] = skipped
+        if bool(cfg.get("freeze_encoder", False)):
+            for name, param in model.named_parameters():
+                if name in loaded:
+                    param.requires_grad_(False)
+        print(f"[train] pretrained encoder: loaded={len(loaded)} skipped={skipped} "
+              f"unseen_node_fraction={pretrained_info['unseen_node_fraction']:.4f}")
 
     lr = float(cfg.get("lr", 0.0005))
     weight_decay = float(cfg.get("weight_decay", 5e-5))
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        [param for param in model.parameters() if param.requires_grad],
         lr=lr,
         weight_decay=weight_decay,
     )
@@ -1079,6 +1807,15 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         "num_layers": num_layers,
         "num_heads": num_heads,
         "aggregation": aggregation,
+        "pooling": pooling,
+        "set2set_steps": set2set_steps,
+        "edge_type_mode": edge_type_mode,
+        "num_relations": num_relations,
+        "graph_features": graph_feature_names,
+        "graph_feature_stats": graph_feature_stats,
+        "pool_subset_types": pool_subset_types,
+        "pool_mask_stats": pool_mask_stats,
+        "pretrained_encoder": pretrained_info,
         "feature_mode": feature_mode,
         "use_type_features": use_type_features,
         "use_numeric_features": use_numeric_features,
@@ -1097,11 +1834,19 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
             "test": len(test_ds),
         },
         "split_indices": split_indices,
+        "train_fraction": train_fraction,
+        "train_size_full": train_size_full,
+        "train_subset_indices": train_subset_indices,
         "num_node_types": num_node_types,
         "num_numeric_feats": num_numeric_feats,
         "num_token_feats": token_feature_dim,
         "token_feature_stats": token_feature_stats,
         "split_path": str(split_path) if split_path is not None else None,
+        "labels_json": cfg.get("labels_json"),
+        "train_target": str(cfg.get("train_target", "consensus")),
+        "review_shares_json": cfg.get("review_shares_json"),
+        "hybrid": model_info.get("hybrid"),
+        "seq_stats": seq_stats,
     }
     (run_dir / "config.json").write_text(json.dumps(config_snapshot, indent=2, default=str))
 
@@ -1131,7 +1876,7 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
 
     def train_loader_fn(epoch: int) -> DataLoader:
         return build_loader(
-            dataset=train_ds,
+            dataset=epoch_graphs(train_ds, train_size_full, seed, epoch),
             max_nodes_per_batch=max_nodes_per_batch,
             max_edges_per_batch=edge_budget,
             shuffle=True,
@@ -1213,7 +1958,25 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
     eval_duration_sec = time.perf_counter() - eval_start
     eval_throughput = len(test_ds) / max(eval_duration_sec, 1e-9)
 
-    total_train_graphs = len(train_ds) * max(result.best_epoch, 1)
+    if bool(cfg.get("save_predictions", False)):
+        predictions_path = run_dir / "predictions.jsonl"
+        n_rows = write_predictions(
+            predictions_path,
+            model_name=prediction_model_name(cfg, model_info),
+            cfg=cfg,
+            parts=[
+                ("val", loader_json_indices(val_loader, val_ds), val_targets.int().numpy(), val_probs.numpy()),
+                (
+                    "test",
+                    loader_json_indices(test_loader, test_ds),
+                    test_targets.int().numpy(),
+                    torch.sigmoid(test_logits).numpy(),
+                ),
+            ],
+        )
+        print(f"[train] predictions: {n_rows} rows -> {predictions_path}")
+
+    total_train_graphs = train_size_full * max(result.best_epoch, 1)
     train_throughput = total_train_graphs / max(train_duration_sec, 1e-9)
 
     test_metrics_fixed = evaluate_full(
@@ -1312,6 +2075,10 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         },
         "test_fixed_0_5": test_metrics_fixed,
         "test_tuned": test_metrics_tuned,
+        "train_fraction": train_fraction,
+        "train_size": len(train_ds),
+        "train_size_full": train_size_full,
+        "train_label_counts": train_summary.label_counts,
         "profiling": {
             "train_duration_sec": round(train_duration_sec, 3),
             "avg_epoch_duration_sec": round(train_duration_sec / max(result.best_epoch, 1), 3),
@@ -1322,6 +2089,11 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
             "eval_duration_sec": round(eval_duration_sec, 3),
         },
     }
+
+    if isinstance(model, HybridClassifier) and model.branch == "hybrid_weighted":
+        artifacts["graph_branch_weight"] = {
+            smell_labels[i]: float(w) for i, w in enumerate(model.mix_weights().detach().cpu())
+        }
 
     (run_dir / "metrics.json").write_text(json.dumps(artifacts, indent=2))
     return artifacts
@@ -1373,6 +2145,8 @@ def main() -> None:
         "split_path": str(args.split_path) if args.split_path else None,
         "save_split": args.save_split,
         "reuse_split": args.reuse_split,
+        "train_fraction": args.train_fraction,
+        "save_predictions": args.save_predictions,
     }
 
     run_training(cfg)

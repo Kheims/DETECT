@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import f1_score, matthews_corrcoef, precision_recall_curve, precision_score, recall_score, roc_auc_score, auc
 
@@ -236,6 +236,17 @@ def run_classical(
     else:
         print("Data clean: no NaN/Inf values")
 
+    # Optional project-grouped folds: no group (e.g. repository) in both train and test
+    groups = None
+    group_json = training_cfg.get("cv_group_json")
+    if group_json:
+        group_key = training_cfg.get("cv_group_key", "repo_url")
+        entries = json.loads(Path(group_json).read_text())
+        with open(metrics_csv) as fh:
+            sample_ids = [int(float(r["sample_idx"])) for r in csv.DictReader(fh)]
+        groups = np.array([str(entries[i].get(group_key, "")) for i in sample_ids])
+        print(f"Grouped CV on '{group_key}': {len(set(groups))} groups")
+
     print(f"Dataset: {X.shape[0]} samples, {X.shape[1]} features, {y.shape[1]} labels")
     print(f"Label distribution: {dict(zip(LABEL_NAMES, y.sum(axis=0).astype(int).tolist()))}")
 
@@ -263,10 +274,15 @@ def run_classical(
 
             if use_cv:
                 strat_col = multilabel_stratify_column(y)
-                skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+                if groups is not None:
+                    skf = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+                    fold_iter = skf.split(X, strat_col, groups)
+                else:
+                    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+                    fold_iter = skf.split(X, strat_col)
 
                 fold_results = []
-                for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, strat_col)):
+                for fold_idx, (train_idx, test_idx) in enumerate(fold_iter):
                     result = run_single_fold(
                         X[train_idx], y[train_idx],
                         X[test_idx], y[test_idx],
