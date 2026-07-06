@@ -1,0 +1,14 @@
+_include_yml: readout_ablation.yml
+
+# Readout ablation on graphs with the snippet-level relational nodes and edges.
+run:
+  name: readout_ablation_l0
+
+construction:
+  relational:
+    enabled: true
+    level: 0
+    context_dir: data/context_files
+
+dataset:
+  edge_types: [Child, NextToken, RelAccess, RelOwner]

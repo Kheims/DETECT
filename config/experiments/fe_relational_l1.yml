@@ -1,0 +1,14 @@
+_include_yml: fe_relational_base.yml
+
+# Relational edges resolved with the enclosing file at the annotated commit.
+run:
+  name: fe_relational_l1
+
+construction:
+  relational:
+    enabled: true
+    level: 1
+    context_dir: data/context_files
+
+dataset:
+  edge_types: [Child, NextToken, RelAccess, RelOwner]

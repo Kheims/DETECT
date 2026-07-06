@@ -1,0 +1,10 @@
+_include_yml: fe_relational_base.yml
+
+# Best ablation GCN on graphs built by tree-sitter-java instead of the ANTLR
+# Java8 grammar.
+run:
+  name: ts_baseline
+
+construction:
+  parser: tree_sitter
+  allow_parse_errors: false

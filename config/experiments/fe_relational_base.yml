@@ -1,0 +1,33 @@
+_include_yml: ../defaults.yml
+
+# Reference for the relational study: best GCN of the ablation, same
+# hyperparameters and seeds.
+run:
+  name: fe_relational_base
+
+token_encoder:
+  enabled: true
+
+dataset:
+  edge_types: [Child, NextToken]
+
+training:
+  architecture: gcn
+  num_layers: 3
+  hidden_dim: 512
+  feature_mode: type_only
+  loss: focal
+  lr: 0.0005
+  epochs: 40
+  patience: 10
+  max_nodes_per_batch: 40000
+  eval_max_nodes_per_batch: 80000
+  device: auto
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44]
+  grid:
+    # the defaults grid is deep-merged, so every inherited key is pinned here
+    training.architecture: [gcn]
+    training.loss: [focal]

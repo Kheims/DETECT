@@ -1,0 +1,14 @@
+_include_yml: fe_relational_base.yml
+
+# Relational edges resolved from the snippet alone (parameters and locals).
+run:
+  name: fe_relational_l0
+
+construction:
+  relational:
+    enabled: true
+    level: 0
+    context_dir: data/context_files
+
+dataset:
+  edge_types: [Child, NextToken, RelAccess, RelOwner]

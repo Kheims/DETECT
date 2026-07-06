@@ -1,0 +1,31 @@
+_include_yml: fe_relational_l0.yml
+
+# Edge-type ablation on level 0 relational graphs: GCN against RGCN, relational
+# readout and own/foreign access counts appended after the readout.
+run:
+  name: edge_types_l0
+
+dataset:
+  store_edge_types: true
+
+training:
+  edge_type_mode: typed_reverse
+  rgcn_num_bases: null
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44]
+  grid:
+    training.architecture: [gcn, rgcn]
+    training.loss: [focal]
+    training.pool_subset_types:
+      - []
+      - [RelOwnClass, RelProjectType, RelExternalType, RelUnresolved]
+    training.graph_features:
+      - null
+      - path: data/relational_features.csv
+        key: sample_idx
+        log1p: true
+        columns: [l0_own_field, l0_own_call, l0_own_total, l0_foreign_project,
+                  l0_foreign_external, l0_foreign_unresolved, l0_distinct_project_types,
+                  l0_max_single_project_type, l0_envy_ratio, l0_foreign_ratio, l0_envy_rule]

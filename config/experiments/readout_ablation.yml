@@ -1,0 +1,13 @@
+_include_yml: fe_relational_base.yml
+
+# Graph readout ablation on the best ablation GCN.
+run:
+  name: readout_ablation
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44]
+  grid:
+    training.architecture: [gcn]
+    training.loss: [focal]
+    training.pooling: [mean, max, add, mean_max, attention, mean_attention, set2set]
