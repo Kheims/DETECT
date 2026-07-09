@@ -1,0 +1,167 @@
+# Figures of the October 2026 campaign (scripts/cv/make_figures.py).
+figures_config:
+  figures_dir: artifacts/figures
+  dpi: 200
+  font_size: 9
+  figures:
+    protocol_fe_strip:
+      type: seed_strip
+      metric: feature_envy_mcc
+      ylabel: "MCC Feature Envy (par graine)"
+      size: [5.0, 3.0]
+      groups:
+        - label: "80/10/10\naléatoire"
+          input: sv=artifacts/reports_cluster/split_variance_merged/records.json
+          group: 'sv {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "random"}'
+        - label: "80/10/10\npar projet"
+          input: sv=artifacts/reports_cluster/split_variance_merged/records.json
+          group: 'sv {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "group"}'
+        - label: "5 x 5 plis\nstratifiés"
+          input: gnn=artifacts/reports/gnn_cv/records.json
+          group: 'gnn {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold"}'
+        - label: "5 x 5 plis\npar projet"
+          input: gnn=artifacts/reports/gnn_cv/records.json
+          group: 'gnn {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "group_kfold"}'
+    gnn_vs_tabular:
+      type: cv_bars
+      size: [7.0, 3.0]
+      ylim: [0.0, 0.8]
+      metric_labels: [Feature Envy, Long Method, Blob, Data Class, Moyenne]
+      groups:
+        - label: "GCN sur AST"
+          input: gnn=artifacts/reports/gnn_cv/records.json
+          group: 'gnn {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold"}'
+        - label: "XGBoost, métriques"
+          input: x=artifacts/tabular_cv/tabular_cv/designite__xgb
+        - label: "Arbre, métriques + accès + niveau"
+          input: x=artifacts/tabular_cv/tabular_cv/designite+relational_l0+level__dt
+    ddp_scaling:
+      type: scaling
+      summary: artifacts/scaling/ssl_scaling/scaling_summary.json
+      xlabel: "GPU V100"
+      ylabel: "graphes par seconde"
+      mode_labels: {weak: "lot fixe par GPU", strong: "lot global fixe"}
+      extra_points:
+        - {label: "2 nœuds x 2 GPU, lot fixe par GPU", metrics: artifacts/scaling/ssl_scaling/weak_2x2/pretrain_metrics.json}
+        - {label: "2 nœuds x 2 GPU, lot global fixe", metrics: artifacts/scaling/ssl_scaling/strong_2x2/pretrain_metrics.json, marker: D}
+    parse_latency_cdf:
+      type: latency_cdf
+      xlabel: "millisecondes par extrait (échelle log)"
+      ylabel: "part des extraits"
+      budgets_ms: [100, 1000]
+      inputs:
+        - {label: "ANTLR (Python), analyse", path: artifacts/latency/antlr_full_cpu_m_series.json, step: parse}
+        - {label: "tree-sitter, analyse", path: artifacts/latency/ts_parse_cpu_m_series.json, step: parse}
+        - {label: "ANTLR, chaîne complète", path: artifacts/latency/antlr_full_cpu_m_series.json, step: total}
+    main_forest_macro:
+      type: forest
+      summary: artifacts/summaries/main_comparison/summary.json
+      metric: macro_mcc
+      xlabel: "écart de MCC moyen avec le GCN (IC 95 % corrigé)"
+      size: [6.5, 3.6]
+      group_labels:
+        'size_logreg {"split_strategy": "kfold"}': "Régression logistique, 14 mesures de taille"
+        'ensemble4 {"members": "gcn+size_logreg+designite_xgb+qwen7b_zeroshot", "split_strategy": "kfold"}': "Moyenne GCN + taille + XGBoost + Qwen 7B"
+        'designite_rel_level_dt {"split_strategy": "kfold"}': "Arbre, métriques + accès + niveau"
+        'qwen36_zeroshot {"split_strategy": "kfold"}': "Qwen3.6-27B sans entraînement"
+        'probe_qwen15b_l14 {"split_strategy": "kfold"}': "Sonde, Qwen2.5-Coder-1.5B couche 14"
+        'node_mlp {"training.architecture": "node_mlp", "training.loss": "focal", "training.split_strategy": "kfold"}': "Même réseau sans passage de messages"
+        'designite_xgb {"split_strategy": "kfold"}': "XGBoost, métriques Designite"
+        'qwen7b_zeroshot {"split_strategy": "kfold"}': "Qwen2.5-Coder-7B sans entraînement"
+        'probe_codebert {"split_strategy": "kfold"}': "Sonde, CodeBERT figé"
+    main_bars:
+      type: cv_bars
+      size: [7.5, 3.2]
+      ylim: [0.0, 0.85]
+      legend_ncol: 3
+      metric_labels: [Feature Envy, Long Method, Blob, Data Class, Moyenne]
+      groups:
+        - label: "GCN sur AST"
+          input: gnn=artifacts/reports/gnn_cv/records.json
+          strategy: kfold
+        - label: "Taille seule"
+          input: x=artifacts/analysis/mlcq/shortcut_cv/size_features__logreg
+          strategy: kfold
+        - label: "XGBoost, métriques"
+          input: x=artifacts/tabular_cv/tabular_cv/designite__xgb
+          strategy: kfold
+        - label: "Qwen3.6-27B sans entraînement"
+          input: x=artifacts/llm_judge_cv/qwen36_27b_fp8
+          strategy: kfold
+        - label: "Sonde Qwen2.5-Coder-1.5B"
+          inputs:
+            - x=artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard0of4
+            - x=artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard1of4
+            - x=artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard2of4
+            - x=artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard3of4
+          strategy: kfold
+        - label: "Moyenne de 4 modèles"
+          input: x=artifacts/analysis/predictions/ensembles/gcn+size+xgb+qwen7b
+          strategy: kfold
+    what_helps_by_smell:
+      type: smell_panels
+      size: [13.0, 4.6]
+      xlabel: "MCC"
+      smells: {feature_envy_mcc: Feature Envy, long_method_mcc: Long Method, blob_mcc: Blob, data_class_mcc: Data Class}
+      families: &families
+        size: "taille du code"
+        metrics: "métriques OO"
+        ast: "graphe AST"
+        finetune: "fine-tuning"
+        probe: "probe sur embeddings figés"
+        zeroshot: "LLM zero-shot"
+        ensemble: "ensemble"
+      models: &models
+        - {label: "régression logistique, 14 counts de taille", short: "taille", family: size, cost_key: size_logreg, input: x=artifacts/analysis/mlcq/shortcut_cv/size_features__logreg, strategy: kfold}
+        - {label: "XGBoost, métriques Designite", short: "XGBoost", family: metrics, cost_key: designite_xgb, input: x=artifacts/tabular_cv/tabular_cv/designite__xgb, strategy: kfold}
+        - {label: "decision tree, métriques + accès + niveau", short: "DT accès", family: metrics, cost_key: none, input: x=artifacts/tabular_cv/tabular_cv/designite+relational_l0+level__dt, strategy: kfold}
+        - {label: "GCN sur AST", short: "GCN", family: ast, cost_key: gcn_ast, input: x=artifacts/reports/gnn_cv/records.json, group: 'x {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold"}'}
+        - {label: "même réseau sans message passing", short: "node MLP", family: ast, cost_key: none, input: x=artifacts/reports/gnn_cv_node_mlp/records.json, strategy: kfold}
+        - {label: "UniXcoder fine-tuné, 512 tokens", short: "UniXcoder", family: finetune, cost_key: finetune_unixcoder, input: x=artifacts/code_finetune/merged/unixcoder, strategy: kfold}
+        - {label: "ModernBERT fine-tuné, 2 048 tokens", short: "ModernBERT 2k", family: finetune, cost_key: finetune_modernbert_2048, input: x=artifacts/code_finetune/merged/modernbert_2048, strategy: kfold}
+        - {label: "probe, Qwen2.5-Coder-1.5B couche 14", short: "probe Qwen 1.5B", family: probe, cost_key: probe_qwen15b_l14, strategy: kfold, input_glob: "x=artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard*of4"}
+        - {label: "probe, CodeBERT", short: "probe CodeBERT", family: probe, cost_key: probe_codebert, strategy: kfold, input_glob: "x=artifacts/tabular_cv/code_probes/codebert__probe_shard*of4"}
+        - {label: "Qwen3.6-27B zero-shot", short: "Qwen3.6-27B", family: zeroshot, cost_key: qwen36_27b_zeroshot, input: x=artifacts/llm_judge_cv/qwen36_27b_fp8, strategy: kfold}
+        - {label: "Qwen2.5-Coder-7B zero-shot", short: "Qwen 7B", family: zeroshot, cost_key: qwen7b_zeroshot, input: x=artifacts/llm_judge_cv/qwen25_coder_7b_instruct, strategy: kfold}
+        - {label: "moyenne GCN + taille + XGBoost + Qwen 7B", short: "ensemble", family: ensemble, cost_key: none, input: x=artifacts/analysis/predictions/ensembles/gcn+size+xgb+qwen7b, strategy: kfold}
+    cost_vs_score:
+      type: cost_vs_score
+      costs: artifacts/analysis/costs/costs.json
+      size: [13.0, 3.6]
+      xlabel: "inférence, ms par extrait (log)"
+      ylabel: "MCC"
+      smells: {feature_envy_mcc: Feature Envy, long_method_mcc: Long Method, blob_mcc: Blob, data_class_mcc: Data Class}
+      families: *families
+      models: *models
+    size_auc_no_model:
+      type: univariate_auc
+      summary: artifacts/analysis/mlcq/summary.json
+      population: eligible
+      size: [6.2, 5.2]
+      title: "Une seule mesure utilisée comme score, sans modèle"
+      colorbar_label: "ROC-AUC (0,5 = hasard)"
+      smells: {fe: "Feature Envy\n(méthodes)", lm: "Long Method\n(méthodes)", blob: "Blob\n(classes)", dc: "Data Class\n(classes)"}
+      features:
+        loc_nonblank: "LOC non vides"
+        tokens: "tokens"
+        ast_nodes: "nœuds AST"
+        n_statements: "statements"
+        n_distinct_identifiers: "identifiants distincts"
+        max_block_nesting: "imbrication max"
+        n_methods: "méthodes"
+        n_fields: "fields"
+        n_params_first_method: "paramètres"
+        n_comments: "commentaires"
+    gnn_learning_curve:
+      type: learning_curve
+      size: [5.0, 3.2]
+      xlabel: "fraction de la partie entraînement utilisée"
+      ylabel: "MCC (3 graines x 5 plis)"
+      metrics: [feature_envy_mcc, long_method_mcc, blob_mcc, data_class_mcc, macro_mcc]
+      metric_labels: [Feature Envy, Long Method, Blob, Data Class, Moyenne]
+      points:
+        - {x: 0.1, input_glob: "lc=artifacts/reports/gnn_learning_curve_2*", group: 'lc {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold", "training.train_fraction": 0.1}'}
+        - {x: 0.25, input_glob: "lc=artifacts/reports/gnn_learning_curve_2*", group: 'lc {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold", "training.train_fraction": 0.25}'}
+        - {x: 0.5, input_glob: "lc=artifacts/reports/gnn_learning_curve_2*", group: 'lc {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold", "training.train_fraction": 0.5}'}
+        - {x: 0.75, input_glob: "lc=artifacts/reports/gnn_learning_curve_2*", group: 'lc {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold", "training.train_fraction": 0.75}'}
+        - {x: 1.0, input_glob: "lc=artifacts/reports/gnn_learning_curve_2*", group: 'lc {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold", "training.train_fraction": 1.0}'}

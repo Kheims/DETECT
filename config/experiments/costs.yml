@@ -1,0 +1,59 @@
+# Measured costs of every model family (scripts/cv/collect_costs.py).
+# CPU latencies come from scripts/analysis/bench_inference.py.
+costs:
+  out: artifacts/analysis/costs/costs.json
+  models:
+    qwen36_27b_zeroshot:
+      kind: llm_meta
+      meta: artifacts/llm_judge/qwen36_27b_fp8/meta.json
+      prompts_per_sample: 2
+      hardware: "1 A6000, batched vLLM, FP8 weights"
+    qwen7b_zeroshot:
+      kind: llm_meta
+      meta: artifacts/llm_judge/qwen25_coder_7b_instruct/meta.json
+      prompts_per_sample: 2
+      hardware: "1 A6000, batched vLLM, bf16"
+    probe_qwen15b_l14:
+      kind: embedding_probe
+      # every layer comes from the same forward pass of qwen25_coder_15b
+      meta: artifacts/embeddings/qwen25_coder_15b/meta.json
+      index: artifacts/embeddings/qwen25_coder_15b/index.json
+      probe_records: "artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard*of4/records.json"
+      hardware: "1 A6000 for the embedding, CPU for the probe"
+    probe_codebert:
+      kind: embedding_probe
+      meta: artifacts/embeddings/codebert/meta.json
+      index: artifacts/embeddings/codebert/index.json
+      probe_records: "artifacts/tabular_cv/code_probes/codebert__probe_shard*of4/records.json"
+      hardware: "1 A6000 for the embedding, CPU for the probe"
+    finetune_unixcoder:
+      kind: finetune
+      records: "artifacts/code_finetune/code_finetune/unixcoder/*/record.json"
+      hardware: "1 A6000, bf16"
+    finetune_codebert:
+      kind: finetune
+      records: "artifacts/code_finetune/code_finetune/codebert/*/record.json"
+      hardware: "1 A6000, bf16"
+    finetune_modernbert_1024:
+      kind: finetune
+      records: "artifacts/code_finetune/code_finetune/modernbert_1024/*/record.json"
+      hardware: "1 A6000, bf16"
+    finetune_modernbert_2048:
+      kind: finetune
+      records: "artifacts/code_finetune/code_finetune/modernbert_2048/*/record.json"
+      hardware: "1 A6000, bf16"
+    gcn_ast:
+      kind: pipeline_records
+      records: artifacts/reports/gnn_cv/records.json
+      note: "training time measured with 10 trainings sharing one GPU"
+      latency: {path: artifacts/latency/antlr_full_cpu_m_series.json, steps: [parse, graph, tokens, inference]}
+      hardware: "training: 1 GPU shared by 10 runs; inference: M-series CPU"
+    size_logreg:
+      kind: tabular_records
+      records: artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/records.json
+      latency: {path: artifacts/latency/ts_parse_cpu_m_series.json, steps: [parse]}
+      hardware: "M-series CPU (tree-sitter parse, then 14 counts and a dot product)"
+    designite_xgb:
+      kind: tabular_records
+      records: artifacts/tabular_cv/tabular_cv/designite__xgb/records.json
+      hardware: "M-series CPU; DesigniteJava extraction time not measured"

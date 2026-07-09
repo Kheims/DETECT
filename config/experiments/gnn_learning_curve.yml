@@ -1,0 +1,20 @@
+_include_yml: gnn_cv.yml
+
+# Learning curve of the reference GCN: each run trains on a stratified subset of its training part.
+# Runs at train_fraction 1.0 reuse the gnn_cv runs.
+run:
+  name: gnn_learning_curve
+
+training:
+  save_predictions: true
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44]
+  grid:
+    # gnn_cv.yml grid is deep-merged: every inherited key is pinned here
+    training.architecture: [gcn]
+    training.loss: [focal]
+    training.split_strategy: [kfold]
+    training.cv_fold: [0, 1, 2, 3, 4]
+    training.train_fraction: [0.1, 0.25, 0.5, 0.75, 1.0]

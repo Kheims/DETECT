@@ -1,0 +1,78 @@
+# Shortcut baselines on the shared folds: snippet size and snippet level alone.
+#   python scripts/cv/cv_tabular.py --config config/experiments/shortcut_baselines.yml
+#   python scripts/cv/eval_eligible.py --config config/experiments/shortcut_baselines.yml
+run:
+  name: shortcut_baselines
+
+tabular_cv:
+  folds: artifacts/folds/mlcq_cv.json
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  strategies: [kfold]
+  seeds: null
+  threshold_steps: 101
+  out_dir: artifacts/analysis/mlcq/shortcut_cv
+  feature_sets:
+    size_features:
+      source: csv
+      path: data/derived/size_features.csv
+      key: sample_idx
+      columns: [loc_physical, loc_nonblank, chars, tokens, ast_nodes, ast_depth, n_methods, n_fields,
+                n_statements, n_params_first_method, max_block_nesting, n_distinct_identifiers,
+                n_classes, n_comments]
+      transform: signed_log1p
+    loc_only:
+      source: csv
+      path: data/derived/size_features.csv
+      key: sample_idx
+      columns: [loc_physical]
+      transform: signed_log1p
+    level_only:
+      source: csv
+      path: data/derived/mlcq_sample_meta.csv
+      key: json_index
+      # 1 for method-level samples, 0 for class-level samples
+      columns: [is_method_level]
+  models:
+    logreg:
+      type: logistic_regression
+      C: 1.0
+      class_weight: balanced
+      max_iter: 2000
+    dt3:
+      type: decision_tree
+      max_depth: 3
+    # same settings as designite__xgb in config/experiments/tabular_cv.yml
+    xgb:
+      type: xgboost
+      n_estimators: 200
+      max_depth: 5
+      lr: 0.1
+  runs:
+    - {features: [size_features], model: logreg}
+    - {features: [size_features], model: dt3}
+    - {features: [loc_only], model: logreg}
+    - {features: [loc_only], model: dt3}
+    - {features: [level_only], model: logreg}
+    - {features: [level_only], model: dt3}
+    - {features: [size_features], model: xgb}
+
+# scripts/cv/eval_eligible.py: each smell scored only on the samples of its level
+eligible_eval:
+  sample_meta: data/derived/mlcq_sample_meta.csv
+  level_column: level
+  label_levels:
+    is_feature_envy: method
+    is_long_method: method
+    is_blob: class
+    is_data_class: class
+  threshold_steps: 101
+  out_dir: artifacts/analysis/mlcq/shortcut_cv_eligible
+  inputs:
+    - {name: size_features__logreg, predictions: artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl}
+    - {name: size_features__dt3, predictions: artifacts/analysis/mlcq/shortcut_cv/size_features__dt3/predictions.jsonl}
+    - {name: loc_only__logreg, predictions: artifacts/analysis/mlcq/shortcut_cv/loc_only__logreg/predictions.jsonl}
+    - {name: loc_only__dt3, predictions: artifacts/analysis/mlcq/shortcut_cv/loc_only__dt3/predictions.jsonl}
+    - {name: level_only__logreg, predictions: artifacts/analysis/mlcq/shortcut_cv/level_only__logreg/predictions.jsonl}
+    - {name: level_only__dt3, predictions: artifacts/analysis/mlcq/shortcut_cv/level_only__dt3/predictions.jsonl}
+    - {name: size_features__xgb, predictions: artifacts/analysis/mlcq/shortcut_cv/size_features__xgb/predictions.jsonl}
+    - {name: designite__xgb, predictions: artifacts/tabular_cv/tabular_cv/designite__xgb/predictions.jsonl}

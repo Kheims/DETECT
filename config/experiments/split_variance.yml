@@ -1,0 +1,17 @@
+_include_yml: fe_relational_base.yml
+
+# Split variance: reference GCN over ten split seeds, random and
+# project-disjoint splits.
+run:
+  name: split_variance
+
+training:
+  split_group_key: repo_url
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  grid:
+    training.architecture: [gcn]
+    training.loss: [focal]
+    training.split_strategy: [random, group]

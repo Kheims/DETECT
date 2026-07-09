@@ -1,0 +1,18 @@
+_include_yml: fe_relational_base.yml
+
+# Reference GCN under 5 seeds x 5-fold cross-validation, plain or project-grouped.
+run:
+  name: gnn_cv
+
+training:
+  split_group_key: repo_url
+  cv_folds: 5
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46]
+  grid:
+    training.architecture: [gcn]
+    training.loss: [focal]
+    training.split_strategy: [kfold, group_kfold]
+    training.cv_fold: [0, 1, 2, 3, 4]

@@ -1,0 +1,49 @@
+# Classical models on the shared folds of the GNN runs (artifacts/folds/mlcq_cv.json).
+run:
+  name: tabular_cv
+
+tabular_cv:
+  folds: artifacts/folds/mlcq_cv.json
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  strategies: [kfold]
+  seeds: null
+  threshold_steps: 101
+  out_dir: artifacts/tabular_cv/tabular_cv
+  feature_sets:
+    designite:
+      source: csv
+      path: data/derived/designite_metrics.csv
+      missing: train_median
+    relational_l0:
+      source: csv
+      path: data/relational_features.csv
+      columns: [l0_own_field, l0_own_call, l0_own_total, l0_foreign_project, l0_foreign_external,
+                l0_foreign_unresolved, l0_distinct_project_types, l0_max_single_project_type,
+                l0_envy_ratio, l0_foreign_ratio, l0_envy_rule]
+    # 1 for a method sample, 0 for a class sample
+    level:
+      source: csv
+      path: data/relational_features.csv
+      columns: [is_method]
+  models:
+    xgb:
+      type: xgboost
+      n_estimators: 200
+      max_depth: 5
+      lr: 0.1
+    dt:
+      type: decision_tree
+      max_depth: 5
+    logreg:
+      type: logistic_regression
+      C: 1.0
+  runs:
+    - {features: [designite], model: xgb}
+    - {features: [designite], model: dt}
+    - {features: [designite], model: logreg}
+    - {features: [designite, relational_l0], model: xgb}
+    - {features: [designite, relational_l0], model: dt}
+    - {features: [designite, relational_l0, level], model: xgb}
+    - {features: [designite, relational_l0, level], model: dt}
+    - {features: [designite, level], model: xgb}
+    - {features: [designite, level], model: dt}

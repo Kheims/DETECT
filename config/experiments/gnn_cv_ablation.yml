@@ -1,0 +1,38 @@
+_include_yml: gnn_cv.yml
+
+# GNN ablation under the shared protocol: architecture x node features (9 configurations).
+# Run the GAT trials with one process per GPU (about 21 GB each on a V100).
+run:
+  name: gnn_cv_ablation
+
+training:
+  save_predictions: true
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44]
+  grid:
+    # gnn_cv.yml grid is deep-merged: every inherited key is pinned here
+    training.architecture: [gcn, gat, graphsage]
+    training.loss: [focal]
+    training.split_strategy: [kfold]
+    training.cv_fold: [0, 1, 2, 3, 4]
+    # type_only also gets the token vectors, numeric_only has no node types
+    training.feature_mode: [type_only, type_only_no_tokens, numeric_only]
+
+# scripts/cv/export_gnn_predictions.py: rebuilds predictions.jsonl from best_model.pt
+gnn_export:
+  jobs:
+    # the 50 gnn_cv runs (device is part of the training fingerprint)
+    - experiment: config/experiments/gnn_cv.yml
+      overrides:
+        training.device: cuda
+      records:
+        - artifacts/reports/gnn_cv/records.json
+        - artifacts/reports/gnn_cv_2*_shard*/records.json
+  out_dir: null
+  report_dir: artifacts/reports/gnn_export
+  overwrite: false
+  mcc_tolerance: 1.0e-6
+  device: auto
+  model_name: null

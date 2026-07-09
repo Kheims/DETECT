@@ -1,0 +1,15 @@
+# Every MLCQ model family scored only on the samples of each smell's level
+# (scripts/cv/eval_eligible.py).
+_include_yml: shortcut_baselines.yml
+
+eligible_eval:
+  out_dir: artifacts/analysis/mlcq/eligible_all
+  inputs:
+    - {name: size_logreg, predictions: artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl}
+    - {name: designite_xgb, predictions: artifacts/tabular_cv/tabular_cv/designite__xgb/predictions.jsonl}
+    - {name: gcn, predictions: "artifacts/runs/*/predictions.jsonl"}
+    - {name: probe_qwen15b_l14, predictions: "artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard*of4/predictions.jsonl"}
+    - {name: ft_unixcoder, predictions: "artifacts/code_finetune/code_finetune/unixcoder/*/predictions.jsonl"}
+    - {name: ft_modernbert_2048, predictions: "artifacts/code_finetune/code_finetune/modernbert_2048/*/predictions.jsonl"}
+    - {name: judge_qwen7b, predictions: artifacts/llm_judge_cv/qwen25_coder_7b_instruct/predictions.jsonl}
+    - {name: judge_qwen27b, predictions: artifacts/llm_judge_cv/qwen36_27b_fp8/predictions.jsonl}

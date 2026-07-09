@@ -1,0 +1,15 @@
+_include_yml: gnn_cv.yml
+
+# Control for the reference GCN under the shared 5 x 5 protocol: same model
+# without message passing (mlcq_graphs/models/node_mlp.py).
+run:
+  name: gnn_cv_node_mlp
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46]
+  grid:
+    training.architecture: [node_mlp]
+    training.loss: [focal]
+    training.split_strategy: [kfold]
+    training.cv_fold: [0, 1, 2, 3, 4]

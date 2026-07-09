@@ -1,0 +1,163 @@
+# Sensitivity of the CV numbers to the label file, threshold rule and validation part, from saved predictions.
+#   python scripts/cv/cv_tabular.py --config config/experiments/tabular_cv_rule_default.yml
+#   python scripts/cv/rescore_predictions.py --config config/experiments/rescoring.yml
+run:
+  name: rescoring
+
+rescoring:
+  folds: artifacts/folds/mlcq_cv.json
+  # val and test json indices of every (strategy, seed, fold) must equal the folds file
+  check_folds: true
+  threshold_steps: 101
+  # null keeps every split strategy found in the predictions
+  strategies: null
+  out_dir: artifacts/analysis/rescoring
+
+  # same samples and order as the normalized MLCQ JSON
+  label_sets:
+    stored: data/MLCQCodeSmellSamples.normalized.json
+    rule_default: data/derived/MLCQCodeSmellSamples.normalized.rule_default.json
+
+  # each smell scored only on the samples of its level
+  eligibility:
+    sample_meta: data/derived/mlcq_sample_meta.csv
+    level_column: level
+    label_levels:
+      is_feature_envy: method
+      is_long_method: method
+      is_blob: class
+      is_data_class: class
+
+  # threshold: max_f1 (reported protocol), max_mcc or fixed (fixed_value, nothing tuned)
+  variants:
+    stored: {labels: stored, threshold: max_f1, eligible_only: false}
+    rule_default: {labels: rule_default, threshold: max_f1, eligible_only: false}
+    eligible: {labels: stored, threshold: max_f1, eligible_only: true}
+    rule_default_eligible: {labels: rule_default, threshold: max_f1, eligible_only: true}
+    max_mcc: {labels: stored, threshold: max_mcc, eligible_only: false}
+    fixed_05: {labels: stored, threshold: fixed, fixed_value: 0.5, eligible_only: false}
+  # variant whose records must reproduce the source records
+  reference_variant: stored
+  reference_training_labels: stored
+  reproduction_tolerance: 1.0e-9
+  # records of a variant compared with <root>/<input name>/records.json
+  variant_checks:
+    eligible: {root: artifacts/analysis/mlcq/shortcut_cv_eligible}
+
+  # base: model a retrained input is paired with (default name)
+  inputs:
+    - {name: designite__xgb, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite__xgb/predictions.jsonl}
+    - {name: designite__dt, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite__dt/predictions.jsonl}
+    - {name: designite__logreg, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite__logreg/predictions.jsonl}
+    - {name: designite+relational_l0__xgb, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite+relational_l0__xgb/predictions.jsonl}
+    - {name: designite+relational_l0__dt, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite+relational_l0__dt/predictions.jsonl}
+    - {name: designite+relational_l0+level__xgb, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite+relational_l0+level__xgb/predictions.jsonl}
+    - {name: designite+relational_l0+level__dt, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite+relational_l0+level__dt/predictions.jsonl}
+    - {name: designite+level__xgb, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite+level__xgb/predictions.jsonl}
+    - {name: designite+level__dt, family: designite, predictions: artifacts/tabular_cv/tabular_cv/designite+level__dt/predictions.jsonl}
+    - {name: size_features__logreg, family: shortcut, predictions: artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl}
+    - {name: size_features__dt3, family: shortcut, predictions: artifacts/analysis/mlcq/shortcut_cv/size_features__dt3/predictions.jsonl}
+    - {name: size_features__xgb, family: shortcut, predictions: artifacts/analysis/mlcq/shortcut_cv/size_features__xgb/predictions.jsonl}
+    - {name: loc_only__logreg, family: shortcut, predictions: artifacts/analysis/mlcq/shortcut_cv/loc_only__logreg/predictions.jsonl}
+    - {name: loc_only__dt3, family: shortcut, predictions: artifacts/analysis/mlcq/shortcut_cv/loc_only__dt3/predictions.jsonl}
+    - {name: level_only__logreg, family: shortcut, predictions: artifacts/analysis/mlcq/shortcut_cv/level_only__logreg/predictions.jsonl}
+    - {name: level_only__dt3, family: shortcut, predictions: artifacts/analysis/mlcq/shortcut_cv/level_only__dt3/predictions.jsonl}
+    # GCN runs of artifacts/reports/gnn_cv/records.json (missing files are skipped)
+    - name: gnn_gcn
+      family: gnn
+      from_records: {records: artifacts/reports/gnn_cv/records.json, field: run_dir, root: artifacts/runs,
+                     file: predictions.jsonl}
+    # trained and evaluated on the rule_default labels
+    - {name: size_features__logreg__trained_rule_default, base: size_features__logreg, family: shortcut,
+       training_labels: rule_default, variants: [rule_default, rule_default_eligible],
+       predictions: artifacts/tabular_cv/rule_default/size_features__logreg/predictions.jsonl}
+    - {name: designite__xgb__trained_rule_default, base: designite__xgb, family: designite,
+       training_labels: rule_default, variants: [rule_default, rule_default_eligible],
+       predictions: artifacts/tabular_cv/rule_default/designite__xgb/predictions.jsonl}
+    - {name: designite+relational_l0+level__dt__trained_rule_default, base: designite+relational_l0+level__dt,
+       family: designite, training_labels: rule_default, variants: [rule_default, rule_default_eligible],
+       predictions: artifacts/tabular_cv/rule_default/designite+relational_l0+level__dt/predictions.jsonl}
+
+  # threshold stability under resampling of the validation part (max_shift in threshold units)
+  bootstrap:
+    enabled: true
+    n_boot: 1000
+    seed: 0
+    max_shift: 0.1
+    percentiles: [5, 50, 95]
+    variants: [stored, eligible]
+    training_labels: [stored]
+
+  summary:
+    strategies: [kfold, group_kfold]
+    # rankings only use inputs with at least this many cells
+    min_cells: 25
+    rank_metrics: [macro_mcc, feature_envy_mcc]
+    label_comparison:
+      settings:
+        - {training_labels: stored, variant: stored}
+        - {training_labels: stored, variant: rule_default}
+        - {training_labels: rule_default, variant: rule_default}
+        - {training_labels: stored, variant: eligible}
+        - {training_labels: stored, variant: rule_default_eligible}
+        - {training_labels: rule_default, variant: rule_default_eligible}
+      # paired test of a retrained input against the reference model
+      paired_eval_variants: [rule_default, rule_default_eligible]
+
+  figures:
+    dir: artifacts/figures
+    prefix: rescoring_
+    variants_name: variants_mcc
+    bootstrap_name: threshold_bootstrap_fe
+    strategy: kfold
+    # Okabe and Ito colour-blind safe palette
+    palette: ["#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#F0E442", "#000000"]
+    ink: "#0b0b0b"
+    ink_secondary: "#52514e"
+    grid: "#e4e3df"
+    series:
+      - {training_labels: stored, variant: stored, label: "Étiquettes stockées, seuil max-F1 (référence)", marker: o}
+      - {training_labels: stored, variant: rule_default, label: "Étiquettes recalculées par la règle (évaluation seule)", marker: s}
+      - {training_labels: rule_default, variant: rule_default, label: "Étiquettes recalculées (entraînement et évaluation)", marker: P}
+      - {training_labels: stored, variant: eligible, label: "Échantillons éligibles seulement", marker: D}
+      - {training_labels: stored, variant: max_mcc, label: "Seuil max-MCC", marker: "^"}
+      - {training_labels: stored, variant: fixed_05, label: "Seuil fixe 0,5", marker: v}
+    metrics:
+      - {key: feature_envy_mcc, title: "Feature Envy"}
+      - {key: macro_mcc, title: "MCC macro (4 défauts)"}
+    xlabel: "MCC sur le test (moyenne de 5 répétitions)"
+    title: "Sensibilité du MCC aux étiquettes et à la règle de seuil (k-fold)"
+    bootstrap_label: is_feature_envy
+    bootstrap_variant: stored
+    bootstrap_title: "Feature Envy : incertitude due au seuil et variation entre plis (k-fold)"
+    bootstrap_xlabel: "Écart-type du MCC sur le test"
+    bootstrap_share_title: "Seuil"
+    bootstrap_share_xlabel: "Part des seuils décalés\nde plus de 0,1"
+    # keys of the bootstrap summary of scripts/cv/rescore_predictions.py
+    bootstrap_panels:
+      - title: "Un pli"
+        series:
+          - {key: across_cells_sd, marker: o, label: "Entre les 25 plis (seuil d'origine)"}
+          - {key: within_cell_sd_mean, marker: s, label: "Seuil rééchantillonné, dans un pli (moyenne des plis)"}
+      - title: "Moyenne des 5 plis d'une répétition"
+        series:
+          - {key: across_seeds_sd_of_fold_means, marker: D, label: "Entre les 5 répétitions (écart-type publié)"}
+          - {key: seed_fold_mean_threshold_sd, marker: "^", label: "Seuil rééchantillonné dans chaque pli"}
+    model_labels:
+      designite__xgb: "Designite, XGBoost"
+      designite__dt: "Designite, arbre"
+      designite__logreg: "Designite, rég. logistique"
+      designite+relational_l0__xgb: "Designite + relationnel, XGBoost"
+      designite+relational_l0__dt: "Designite + relationnel, arbre"
+      designite+relational_l0+level__xgb: "Designite + relationnel + niveau, XGBoost"
+      designite+relational_l0+level__dt: "Designite + relationnel + niveau, arbre"
+      designite+level__xgb: "Designite + niveau, XGBoost"
+      designite+level__dt: "Designite + niveau, arbre"
+      size_features__logreg: "Taille, rég. logistique"
+      size_features__dt3: "Taille, arbre"
+      size_features__xgb: "Taille, XGBoost"
+      loc_only__logreg: "LOC seul, rég. logistique"
+      loc_only__dt3: "LOC seul, arbre"
+      level_only__logreg: "Niveau seul, rég. logistique"
+      level_only__dt3: "Niveau seul, arbre"
+      gnn_gcn: "GNN (GCN, perte focale)"

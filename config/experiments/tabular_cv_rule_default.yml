@@ -1,0 +1,58 @@
+# Three tabular runs trained and evaluated with the rule_default labels, otherwise as their source runs.
+#   python scripts/cv/cv_tabular.py --config config/experiments/tabular_cv_rule_default.yml
+#   python scripts/cv/rescore_predictions.py --config config/experiments/rescoring.yml
+run:
+  name: tabular_cv_rule_default
+
+tabular_cv:
+  folds: artifacts/folds/mlcq_cv.json
+  input_json: data/derived/MLCQCodeSmellSamples.normalized.rule_default.json
+  strategies: [kfold]
+  seeds: null
+  threshold_steps: 101
+  out_dir: artifacts/tabular_cv/rule_default
+  feature_sets:
+    # from config/experiments/shortcut_baselines.yml
+    size_features:
+      source: csv
+      path: data/derived/size_features.csv
+      key: sample_idx
+      columns: [loc_physical, loc_nonblank, chars, tokens, ast_nodes, ast_depth, n_methods, n_fields,
+                n_statements, n_params_first_method, max_block_nesting, n_distinct_identifiers,
+                n_classes, n_comments]
+      transform: signed_log1p
+    # from config/experiments/tabular_cv.yml
+    designite:
+      source: csv
+      path: data/derived/designite_metrics.csv
+      missing: train_median
+    relational_l0:
+      source: csv
+      path: data/relational_features.csv
+      columns: [l0_own_field, l0_own_call, l0_own_total, l0_foreign_project, l0_foreign_external,
+                l0_foreign_unresolved, l0_distinct_project_types, l0_max_single_project_type,
+                l0_envy_ratio, l0_foreign_ratio, l0_envy_rule]
+    level:
+      source: csv
+      path: data/relational_features.csv
+      columns: [is_method]
+  models:
+    # logreg of config/experiments/shortcut_baselines.yml
+    logreg:
+      type: logistic_regression
+      C: 1.0
+      class_weight: balanced
+      max_iter: 2000
+    # xgb and dt of config/experiments/tabular_cv.yml
+    xgb:
+      type: xgboost
+      n_estimators: 200
+      max_depth: 5
+      lr: 0.1
+    dt:
+      type: decision_tree
+      max_depth: 5
+  runs:
+    - {features: [size_features], model: logreg}
+    - {features: [designite], model: xgb}
+    - {features: [designite, relational_l0, level], model: dt}

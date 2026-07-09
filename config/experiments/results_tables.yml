@@ -1,0 +1,47 @@
+# Detection results per smell for every model family, one table per dataset
+# and evaluation population (scripts/cv/results_tables.py).
+results_tables:
+  out_dir: artifacts/analysis/results_tables
+  strategies: [kfold, group_kfold]
+  tables:
+    mlcq:
+      title: "MLCQ, each smell on the samples of its level"
+      labels: [is_feature_envy, is_long_method, is_blob, is_data_class]
+      models:
+        - {name: "Size features, logistic regression", kind: metrics, records: artifacts/analysis/mlcq/eligible_all/size_logreg/records.json}
+        - {name: "DesigniteJava metrics, XGBoost", kind: metrics, records: artifacts/analysis/mlcq/eligible_all/designite_xgb/records.json}
+        - {name: "DesigniteJava + relational access features, XGBoost", kind: metrics, records: artifacts/analysis/mlcq/eligible_all/designite_relational_xgb/records.json}
+        - {name: "DesigniteJava metrics, decision tree", kind: metrics, records: artifacts/analysis/mlcq/eligible_all/designite_dt/records.json}
+        - {name: "DesigniteJava + relational access features, decision tree", kind: metrics, records: artifacts/analysis/mlcq/eligible_all/rel_dt/records.json}
+        - {name: "GCN on AST graphs", kind: graph, records: artifacts/analysis/mlcq/eligible_all/gcn/records.json}
+        - {name: "Qwen2.5-Coder 1.5B embedding, linear probe", kind: embedding, records: artifacts/analysis/mlcq/eligible_all/probe_qwen15b_l14/records.json}
+        - {name: "UniXcoder fine-tuned", kind: fine-tuned, records: artifacts/analysis/mlcq/eligible_all/ft_unixcoder/records.json}
+        - {name: "ModernBERT fine-tuned", kind: fine-tuned, records: artifacts/analysis/mlcq/eligible_all/ft_modernbert_2048/records.json}
+        - {name: "Qwen2.5-Coder 7B, zero-shot judge", kind: LLM, records: artifacts/analysis/mlcq/eligible_all/judge_qwen7b/records.json}
+        - {name: "Qwen3.6-27B, zero-shot judge", kind: LLM, records: artifacts/analysis/mlcq/eligible_all/judge_qwen27b/records.json}
+      rule_tools: {source: artifacts/industrial/industrial.json, keys: {PMD 7.28: pmd_mlcq, DesigniteJava: designite_mlcq}}
+    dacos_all:
+      title: "DACOS, all samples"
+      labels: [is_complex_method, is_long_parameter_list]
+      models:
+        - {name: "Size features, logistic regression", kind: metrics, records: artifacts/dacos/tabular_cv/size_features__logreg/records.json}
+        - {name: "Size features, XGBoost", kind: metrics, records: artifacts/dacos/tabular_cv/size_features__xgb/records.json}
+        - {name: "DesigniteJava metrics, XGBoost", kind: metrics, records: artifacts/dacos/tabular_cv/designite__xgb/records.json}
+        - {name: "Qwen2.5-Coder 1.5B embedding, linear probe", kind: embedding, records: artifacts/dacos/code_probes/qwen25_coder_15b_l14__probe/records.json}
+        - {name: "UniXcoder embedding, linear probe", kind: embedding, records: artifacts/dacos/code_probes/unixcoder__probe/records.json}
+        - {name: "UniXcoder fine-tuned", kind: fine-tuned, records: "artifacts/dacos/code_finetune/metamorphic_finetune_dacos/unixcoder/*/record.json"}
+        - {name: "Qwen2.5-Coder 7B, zero-shot judge", kind: LLM, records: artifacts/dacos/llm_judge_cv/qwen25_coder_7b_instruct/records.json}
+        - {name: "Qwen3.6-27B, zero-shot judge", kind: LLM, records: artifacts/dacos/llm_judge_cv/qwen36_27b_fp8/records.json}
+      rule_tools: {source: artifacts/industrial/industrial.json, keys: {PMD 7.28: pmd_dacos, DesigniteJava: designite_dacos}}
+    dacos_offered:
+      title: "DACOS, samples where the annotation tool offered the smell"
+      labels: [is_complex_method, is_long_parameter_list]
+      models:
+        - {name: "Size features, logistic regression", kind: metrics, records: artifacts/dacos/offered_eval/size_features__logreg/records.json}
+        - {name: "Size features, XGBoost", kind: metrics, records: artifacts/dacos/offered_eval/size_features__xgb/records.json}
+        - {name: "DesigniteJava metrics, XGBoost", kind: metrics, records: artifacts/dacos/offered_eval/designite__xgb/records.json}
+        - {name: "Qwen2.5-Coder 1.5B embedding, linear probe", kind: embedding, records: artifacts/dacos/offered_eval/probe_qwen15b_l14/records.json}
+        - {name: "UniXcoder embedding, linear probe", kind: embedding, records: artifacts/dacos/offered_eval/probe_unixcoder/records.json}
+        - {name: "UniXcoder fine-tuned", kind: fine-tuned, records: artifacts/dacos/offered_eval/ft_unixcoder/records.json}
+        - {name: "Qwen2.5-Coder 7B, zero-shot judge", kind: LLM, records: artifacts/dacos/offered_eval/qwen7b_judge/records.json}
+        - {name: "Qwen3.6-27B, zero-shot judge", kind: LLM, records: artifacts/dacos/offered_eval/qwen27b_judge/records.json}

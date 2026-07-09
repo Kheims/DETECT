@@ -1,0 +1,184 @@
+# Figures of the second campaign (DACOS, size control, metamorphic tests, context and agents).
+# python scripts/cv/make_figures.py --config config/experiments/figures_beyond.yml
+figures_config:
+  figures_dir: artifacts/figures_beyond
+  dpi: 300
+  font_size: 9
+  figures:
+    size_controlled_mlcq:
+      type: size_controlled
+      input: artifacts/analysis/size_controlled/size_controlled.json
+      dataset: mlcq
+      size: [12.0, 5.8]
+      strata_label: "decile of non-blank LOC"
+      smells:
+        is_feature_envy: "Feature Envy (methods)"
+        is_long_method: "Long Method (methods)"
+        is_blob: "Blob (classes)"
+        is_data_class: "Data Class (classes)"
+      families: &families
+        size: "code size"
+        metrics: "OO metrics"
+        ast: "AST graph"
+        probe: "probe on frozen embeddings"
+        finetune: "fine-tuning"
+        zeroshot: "zero-shot LLM"
+      models:
+        - {key: size_logreg, label: "logistic regression, 14 size counts", family: size}
+        - {key: designite_xgb, label: "XGBoost, Designite metrics", family: metrics}
+        - {key: gcn, label: "GCN on AST", family: ast}
+        - {key: probe_qwen15b_l14, label: "probe, Qwen2.5-Coder-1.5B layer 14", family: probe}
+        - {key: ft_unixcoder, label: "UniXcoder fine-tuned, 512 tokens", family: finetune}
+        - {key: ft_modernbert_2048, label: "ModernBERT fine-tuned, 2048 tokens", family: finetune}
+        - {key: judge_qwen7b, label: "Qwen2.5-Coder-7B zero-shot", family: zeroshot}
+        - {key: judge_qwen27b, label: "Qwen3.6-27B zero-shot", family: zeroshot}
+    # MCC against inference cost per smell (MLCQ, kfold)
+    cost_frontier_mlcq:
+      type: cost_vs_score
+      costs: artifacts/analysis/costs/costs.json
+      size: [13.0, 3.8]
+      frontier: true
+      xlabel: "inference, ms per snippet (log scale)"
+      ylabel: "MCC"
+      smells: {feature_envy_mcc: Feature Envy, long_method_mcc: Long Method, blob_mcc: Blob, data_class_mcc: Data Class}
+      notes:
+        long_method_mcc: "size alone gives the best score"
+        blob_mcc: "size ties the best models;\n2048 tokens beat 512 tokens"
+        data_class_mcc: "fine-tuning and probes beat size\nby about 0.1"
+        feature_envy_mcc: "no model beats size;\nreviewer agreement alpha = -0.04"
+      families:
+        size: "code size"
+        metrics: "OO metrics"
+        ast: "AST graph"
+        finetune: "fine-tuning"
+        probe: "probe on frozen embeddings"
+        zeroshot: "zero-shot LLM"
+      models:
+        - {label: "logistic regression, 14 size counts", short: "size", family: size, cost_key: size_logreg, input: x=artifacts/analysis/mlcq/shortcut_cv/size_features__logreg, strategy: kfold}
+        - {label: "XGBoost, Designite metrics", short: "XGBoost", family: metrics, cost_key: designite_xgb, input: x=artifacts/tabular_cv/tabular_cv/designite__xgb, strategy: kfold}
+        - {label: "GCN on AST", short: "GCN", family: ast, cost_key: gcn_ast, input: x=artifacts/reports/gnn_cv/records.json, group: 'x {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold"}'}
+        - {label: "UniXcoder fine-tuned, 512 tokens", short: "UniXcoder", family: finetune, cost_key: finetune_unixcoder, input: x=artifacts/code_finetune/merged/unixcoder, strategy: kfold}
+        - {label: "ModernBERT fine-tuned, 2048 tokens", short: "ModernBERT 2k", family: finetune, cost_key: finetune_modernbert_2048, input: x=artifacts/code_finetune/merged/modernbert_2048, strategy: kfold}
+        - {label: "probe, Qwen2.5-Coder-1.5B layer 14", short: "probe 1.5B", family: probe, cost_key: probe_qwen15b_l14, strategy: kfold, input_glob: "x=artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard*of4"}
+        - {label: "Qwen3.6-27B zero-shot", short: "Qwen 27B", family: zeroshot, cost_key: qwen36_27b_zeroshot, input: x=artifacts/llm_judge_cv/qwen36_27b_fp8, strategy: kfold}
+        - {label: "Qwen2.5-Coder-7B zero-shot", short: "Qwen 7B", family: zeroshot, cost_key: qwen7b_zeroshot, input: x=artifacts/llm_judge_cv/qwen25_coder_7b_instruct, strategy: kfold}
+    # cost frontier with every smell scored on the samples of its level only
+    cost_frontier_mlcq_eligible:
+      type: cost_vs_score
+      costs: artifacts/analysis/costs/costs.json
+      size: [13.0, 3.8]
+      frontier: true
+      xlabel: "inference, ms per snippet (log scale)"
+      ylabel: "MCC"
+      smells: {feature_envy_mcc: Feature Envy, long_method_mcc: Long Method, blob_mcc: Blob, data_class_mcc: Data Class}
+      notes:
+        long_method_mcc: "size alone gives the best score"
+        blob_mcc: "size within 0.004 MCC of the best model;\n2048 tokens beat 512 tokens"
+        data_class_mcc: "fine-tuning and probes beat size\nby about 0.13 MCC"
+        feature_envy_mcc: "GCN and size within 0.002 MCC;\nreviewer agreement alpha = -0.04"
+      families:
+        size: "code size"
+        metrics: "OO metrics"
+        ast: "AST graph"
+        finetune: "fine-tuning"
+        probe: "probe on frozen embeddings"
+        zeroshot: "zero-shot LLM"
+      models:
+        - {label: "logistic regression, 14 size counts", short: "size", family: size, cost_key: size_logreg, input: x=artifacts/analysis/mlcq/eligible_all/size_logreg, strategy: kfold}
+        - {label: "XGBoost, Designite metrics", short: "XGBoost", family: metrics, cost_key: designite_xgb, input: x=artifacts/analysis/mlcq/eligible_all/designite_xgb, strategy: kfold}
+        - {label: "GCN on AST", short: "GCN", family: ast, cost_key: gcn_ast, input: x=artifacts/analysis/mlcq/eligible_all/gcn, strategy: kfold}
+        - {label: "UniXcoder fine-tuned, 512 tokens", short: "UniXcoder", family: finetune, cost_key: finetune_unixcoder, input: x=artifacts/analysis/mlcq/eligible_all/ft_unixcoder, strategy: kfold}
+        - {label: "ModernBERT fine-tuned, 2048 tokens", short: "ModernBERT 2k", family: finetune, cost_key: finetune_modernbert_2048, input: x=artifacts/analysis/mlcq/eligible_all/ft_modernbert_2048, strategy: kfold}
+        - {label: "probe, Qwen2.5-Coder-1.5B layer 14", short: "probe 1.5B", family: probe, cost_key: probe_qwen15b_l14, strategy: kfold, input: x=artifacts/analysis/mlcq/eligible_all/probe_qwen15b_l14}
+        - {label: "Qwen3.6-27B zero-shot", short: "Qwen 27B", family: zeroshot, cost_key: qwen36_27b_zeroshot, input: x=artifacts/analysis/mlcq/eligible_all/judge_qwen27b, strategy: kfold}
+        - {label: "Qwen2.5-Coder-7B zero-shot", short: "Qwen 7B", family: zeroshot, cost_key: qwen7b_zeroshot, input: x=artifacts/analysis/mlcq/eligible_all/judge_qwen7b, strategy: kfold}
+    dacos_offered_collapse:
+      type: offered_collapse
+      strategy: kfold
+      size: [10.5, 3.6]
+      xlim: [-0.1, 0.8]
+      smells:
+        is_complex_method: "Complex Method"
+        is_long_parameter_list: "Long Parameter List"
+      families:
+        size: "code size"
+        metrics: "Designite metrics"
+      models:
+        - {label: "14 size counts, XGBoost", family: size, all: artifacts/dacos/tabular_cv/size_features__xgb/records.json, offered: artifacts/dacos/offered_eval/size_features__xgb/records.json}
+        - {label: "non-blank LOC, XGBoost", family: size, all: artifacts/dacos/tabular_cv/loc_only__xgb/records.json, offered: artifacts/dacos/offered_eval/loc_only__xgb/records.json}
+        - {label: "parameter count, XGBoost", family: size, all: artifacts/dacos/tabular_cv/params_only__xgb/records.json, offered: artifacts/dacos/offered_eval/params_only__xgb/records.json}
+        - {label: "cyclomatic complexity, XGBoost", family: metrics, all: artifacts/dacos/tabular_cv/cc_only__xgb/records.json, offered: artifacts/dacos/offered_eval/cc_only__xgb/records.json}
+        - {label: "cc, pc and LOC, XGBoost", family: metrics, all: artifacts/dacos/tabular_cv/designite__xgb/records.json, offered: artifacts/dacos/offered_eval/designite__xgb/records.json}
+    # Claude Sonnet 5 with and without repository access against cheap models on the same pairs
+    claude_agent_auc:
+      type: scorer_auc
+      size: [14.0, 3.6]
+      families:
+        llm: "Claude Sonnet 5"
+        open_llm: "open-weight LLM"
+        cheap: "size or metric model"
+        ast: "AST graph"
+      scorers:
+        - {key: snippet, label: "Claude, snippet only", family: llm}
+        - {key: agent, label: "Claude agent, reads the repository", family: llm}
+        - {key: qwen36_27b_zeroshot, label: "Qwen3.6-27B zero-shot", family: open_llm}
+        - {key: gcn_seed42, label: "GCN on AST (seed 42)", family: ast}
+        - {key: size_logreg_seed42, label: "size logistic regression (seed 42)", family: cheap}
+        - {key: designite_xgb_seed42, label: "Designite metrics XGBoost (seed 42)", family: cheap}
+      panels:
+        - {input: artifacts/claude_agent/sonnet5/evaluation.json, smell: is_feature_envy, title: "MLCQ Feature Envy"}
+        - {input: artifacts/claude_agent/sonnet5/evaluation.json, smell: is_long_method, title: "MLCQ Long Method"}
+        - {input: artifacts/claude_agent/sonnet5/evaluation.json, smell: is_blob, title: "MLCQ Blob"}
+        - {input: artifacts/claude_agent/sonnet5/evaluation.json, smell: is_data_class, title: "MLCQ Data Class"}
+        - {input: artifacts/claude_agent/sonnet5_dacos/evaluation.json, smell: is_complex_method, title: "DACOS Complex M. (offered)"}
+        - {input: artifacts/claude_agent/sonnet5_dacos/evaluation.json, smell: is_long_parameter_list, title: "DACOS Long Param. (offered)"}
+    # same predictions scored on the wide and the eligible population
+    population_shift:
+      type: population_shift
+      strategy: kfold
+      size: [16.0, 3.9]
+      xlim: [-0.1, 0.85]
+      wide_label: "wide population (MLCQ: both levels, DACOS: all snippets)"
+      narrow_label: "eligible population (MLCQ: smell's level, DACOS: smell offered)"
+      families:
+        size: "code size"
+        metrics: "OO metrics"
+        ast: "AST graph"
+        finetune: "fine-tuning"
+        zeroshot: "zero-shot LLM"
+      panels:
+        - {dataset: mlcq, label: is_feature_envy, title: "MLCQ Feature Envy"}
+        - {dataset: mlcq, label: is_long_method, title: "MLCQ Long Method"}
+        - {dataset: mlcq, label: is_blob, title: "MLCQ Blob"}
+        - {dataset: mlcq, label: is_data_class, title: "MLCQ Data Class"}
+        - {dataset: dacos, label: is_complex_method, title: "DACOS Complex Method"}
+        - {dataset: dacos, label: is_long_parameter_list, title: "DACOS Long Param. List"}
+      models:
+        - label: "size logistic regression"
+          family: size
+          records:
+            mlcq: {wide: artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/records.json, narrow: artifacts/analysis/mlcq/eligible_all/size_logreg/records.json}
+            dacos: {wide: artifacts/dacos/tabular_cv/size_features__logreg/records.json, narrow: artifacts/dacos/offered_eval/size_features__logreg/records.json}
+        - label: "metrics, XGBoost"
+          family: metrics
+          records:
+            mlcq: {wide: artifacts/tabular_cv/tabular_cv/designite__xgb/records.json, narrow: artifacts/analysis/mlcq/eligible_all/designite_xgb/records.json}
+            dacos: {wide: artifacts/dacos/tabular_cv/designite__xgb/records.json, narrow: artifacts/dacos/offered_eval/designite__xgb/records.json}
+        - label: "GCN on AST"
+          family: ast
+          records:
+            mlcq: {wide: artifacts/reports/gnn_cv/records.json, narrow: artifacts/analysis/mlcq/eligible_all/gcn/records.json}
+        - label: "ModernBERT fine-tuned, 2048 tokens"
+          family: finetune
+          records:
+            mlcq: {wide: artifacts/code_finetune/merged/modernbert_2048/records.json, narrow: artifacts/analysis/mlcq/eligible_all/ft_modernbert_2048/records.json}
+        - label: "Qwen2.5-Coder-7B zero-shot"
+          family: zeroshot
+          records:
+            mlcq: {wide: artifacts/llm_judge_cv/qwen25_coder_7b_instruct/records.json, narrow: artifacts/analysis/mlcq/eligible_all/judge_qwen7b/records.json}
+            dacos: {wide: artifacts/dacos/llm_judge_cv/qwen25_coder_7b_instruct/records.json, narrow: artifacts/dacos/offered_eval/qwen7b_judge/records.json}
+        - label: "Qwen3.6-27B zero-shot"
+          family: zeroshot
+          records:
+            mlcq: {wide: artifacts/llm_judge_cv/qwen36_27b_fp8/records.json, narrow: artifacts/analysis/mlcq/eligible_all/judge_qwen27b/records.json}
+            dacos: {wide: artifacts/dacos/llm_judge_cv/qwen36_27b_fp8/records.json, narrow: artifacts/dacos/offered_eval/qwen27b_judge/records.json}

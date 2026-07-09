@@ -1,0 +1,94 @@
+# Fine-tuned pretrained code encoders on the shared folds.
+#   python scripts/cv/finetune_code_model.py --config config/experiments/code_finetune.yml --shard-index 0 --shard-count 6
+#   python scripts/cv/finetune_code_model.py --config config/experiments/code_finetune.yml --collect
+run:
+  name: code_finetune
+
+code_finetune:
+  folds: artifacts/folds/mlcq_cv.json
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  # Hugging Face snapshots
+  models_dir: data/models
+  # items go to <out_dir>/<run.name>/<model>/<strategy>_s<seed>_f<fold>/
+  out_dir: artifacts/code_finetune
+  strategies: [kfold]
+  seeds: [42, 43, 44, 45, 46]
+  fold_ids: [0, 1, 2, 3, 4]
+  threshold_steps: 101
+  device: auto
+  # bf16 autocast, CUDA only
+  bf16: true
+  tf32: true
+  # per-epoch training probabilities (dataset cartography)
+  dynamics: true
+  # smoke tests only: first n samples of each part (null keeps all)
+  subset: {train: null, val: null, test: null}
+  # validation macro F1 at threshold 0.5, as in the GNN Trainer
+  early_stopping:
+    metric: macro_f1
+    patience: 10
+    min_delta: 0.0
+
+  # shared by every model unless overridden below
+  defaults:
+    max_length: 512
+    # head | tail | head_tail
+    truncation: head
+    head_tokens: 128
+    # tokens inserted after the first special token
+    prefix_tokens: []
+    # cls | mean
+    pooling: cls
+    dropout: 0.1
+    lr: 2.0e-5
+    batch_size: 16
+    grad_accum: 1
+    epochs: 10
+    warmup_ratio: 0.1
+    weight_decay: 0.01
+    grad_clip_norm: 1.0
+    # focal | weighted_bce | bce
+    loss: focal
+    focal_gamma: 2.0
+    focal_alpha: -1.0
+    gradient_checkpointing: false
+    # null keeps the transformers default
+    attn_implementation: null
+    eval_batch_size: 64
+
+  models:
+    codebert:
+      path: microsoft__codebert-base
+    # code tokens only, no data flow graph input
+    graphcodebert:
+      path: microsoft__graphcodebert-base
+    # encoder-only mode and mean pooling
+    unixcoder:
+      path: microsoft__unixcoder-base
+      prefix_tokens: ["<encoder-only>", "</s>"]
+      pooling: mean
+    modernbert_1024:
+      path: answerdotai__ModernBERT-base
+      max_length: 1024
+      pooling: mean
+    # effective batch 16 (8 x 2 accumulation steps)
+    modernbert_2048:
+      path: answerdotai__ModernBERT-base
+      max_length: 2048
+      pooling: mean
+      batch_size: 8
+      grad_accum: 2
+      eval_batch_size: 32
+    # truncation ablation, not in run_models
+    unixcoder_head_tail:
+      path: microsoft__unixcoder-base
+      prefix_tokens: ["<encoder-only>", "</s>"]
+      pooling: mean
+      truncation: head_tail
+    unixcoder_tail:
+      path: microsoft__unixcoder-base
+      prefix_tokens: ["<encoder-only>", "</s>"]
+      pooling: mean
+      truncation: tail
+
+  run_models: [codebert, graphcodebert, unixcoder, modernbert_1024, modernbert_2048]
