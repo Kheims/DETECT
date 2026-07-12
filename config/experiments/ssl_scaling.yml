@@ -1,0 +1,13 @@
+_include_yml: ssl_pretrain_contrastive.yml
+
+# DDP scaling benchmark of the pre-training (scripts/pretraining/pretrain_scaling.py and
+# scripts/slurm/ddp_multinode.sbatch).
+run:
+  name: ssl_scaling
+
+pretraining:
+  scaling:
+    world_sizes: [1, 2, 4]
+    modes: [weak, strong]
+    epochs: 2
+    max_steps_per_epoch: 150

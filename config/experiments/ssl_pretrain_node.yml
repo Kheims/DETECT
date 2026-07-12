@@ -1,0 +1,10 @@
+_include_yml: ssl_pretrain.yml
+
+# Pre-training with single-node type masking.
+run:
+  name: ssl_pretrain_node
+
+pretraining:
+  objectives:
+    masked_type:
+      mask_mode: node

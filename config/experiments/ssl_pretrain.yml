@@ -1,0 +1,75 @@
+_include_yml: ts_baseline.yml
+
+# Self-supervised pre-training of the GCN encoder on code2seq java-small, then
+# fine-tuning on MLCQ, compared with random init.
+run:
+  name: ssl_pretrain
+
+token_encoder:
+  enabled: false
+
+training:
+  feature_mode: type_only
+  init_from_pretraining: true
+  pretrained_checkpoint: encoder_best.pt
+  freeze_encoder: false
+
+pretraining:
+  enabled: true
+  device: auto
+  corpus:
+    input_dir: data/pretrain/raw/java-small/training
+    parser: tree_sitter
+    allow_parse_errors: false
+    exclude_mlcq_projects: true
+    exclude_projects: []
+    max_file_bytes: 100000
+    limit: 20000
+    sample_seed: 0
+    workers: 16
+    chunksize: 16
+    progress_every: 5000
+  edge_types: [Child, NextToken]
+  # graphs are cut into method and class units to match MLCQ snippets
+  units:
+    node_types: [method_declaration, constructor_declaration, class_declaration]
+    keep_file: false
+    min_nodes: 20
+    max_nodes: 15000
+  architecture: gcn
+  hidden_dim: 512
+  num_layers: 3
+  type_emb_dim: 128
+  dropout: 0.2
+  objectives:
+    masked_type:
+      weight: 1.0
+      mask_ratio: 0.15
+      mask_mode: subtree
+      max_subtree_nodes: 64
+    contrastive:
+      weight: 0.0
+      temperature: 0.2
+      feature_mask: 0.2
+      edge_drop: 0.1
+      proj_dim: 128
+  epochs: 10
+  max_steps_per_epoch: null
+  lr: 0.001
+  weight_decay: 0.00001
+  grad_clip_norm: 1.0
+  max_nodes_per_batch: 40000
+  batch_scaling: weak
+  val_fraction: 0.02
+  seed: 0
+  dist_backend: nccl
+  distributed:
+    nproc_per_node: 1
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44]
+  grid:
+    training.architecture: [gcn]
+    training.loss: [focal]
+    training.init_from_pretraining: [false, true]

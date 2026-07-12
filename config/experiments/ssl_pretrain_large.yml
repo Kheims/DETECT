@@ -1,0 +1,11 @@
+_include_yml: ssl_pretrain_contrastive.yml
+
+# Pre-training on the whole java-small training split (MLCQ projects excluded)
+# with a longer schedule.
+run:
+  name: ssl_pretrain_large
+
+pretraining:
+  corpus:
+    limit: null
+  epochs: 50
