@@ -1,0 +1,30 @@
+# Construct overlap between MLCQ and DACOS method-level smells
+# (scripts/analysis/cross_dataset.py).
+cross_dataset:
+  out: artifacts/analysis/cross_dataset/cross_dataset.json
+  datasets:
+    mlcq:
+      input_json: data/MLCQCodeSmellSamples.normalized.json
+      level_csv: data/derived/mlcq_sample_meta.csv
+      level_key: json_index
+      level_column: level
+      # label -> column of y
+      labels: {is_feature_envy: 0, is_long_method: 1}
+    dacos:
+      input_json: data/derived/dacos/dacos_methods.normalized.json
+      labels: {is_complex_method: 0, is_long_parameter_list: 1}
+  detectors:
+    size_logreg:
+      C: 1.0
+      features:
+        mlcq: &size_cols
+          source: csv
+          path: data/derived/size_features.csv
+          key: sample_idx
+          transform: signed_log1p
+          columns: [loc_physical, loc_nonblank, chars, tokens, ast_nodes, ast_depth, n_methods, n_fields,
+                    n_statements, n_params_first_method, max_block_nesting, n_distinct_identifiers,
+                    n_classes, n_comments]
+        dacos:
+          <<: *size_cols
+          path: data/derived/dacos/size_features.csv

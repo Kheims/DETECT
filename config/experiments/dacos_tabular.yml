@@ -1,0 +1,94 @@
+# Size and Designite baselines on the DACOS method snippets under the shared folds.
+#   python scripts/cv/cv_tabular.py --config config/experiments/dacos_tabular.yml
+run:
+  name: dacos_tabular
+
+tabular_cv:
+  folds: artifacts/folds/dacos_cv.json
+  input_json: data/derived/dacos/dacos_methods.normalized.json
+  # checked against meta.label_order of the folds file
+  label_order: [is_complex_method, is_long_parameter_list]
+  strategies: [kfold, group_kfold]
+  seeds: null
+  threshold_steps: 101
+  out_dir: artifacts/dacos/tabular_cv
+  skip_existing: false
+  missing_features: error
+
+  feature_sets:
+    size_features:
+      source: csv
+      path: data/derived/dacos/size_features.csv
+      key: sample_idx
+      columns: [loc_physical, loc_nonblank, chars, tokens, ast_nodes, ast_depth, n_methods, n_fields,
+                n_statements, n_params_first_method, max_block_nesting, n_distinct_identifiers,
+                n_classes, n_comments]
+      transform: signed_log1p
+    loc_only:
+      source: csv
+      path: data/derived/dacos/size_features.csv
+      key: sample_idx
+      columns: [loc_nonblank]
+      transform: signed_log1p
+    params_only:
+      source: csv
+      path: data/derived/dacos/size_features.csv
+      key: sample_idx
+      columns: [n_params_first_method]
+      transform: signed_log1p
+    # cyclomatic complexity, lines of code and parameter count from DesigniteJava
+    designite:
+      source: csv
+      path: data/derived/dacos/designite_metrics.csv
+      key: sample_idx
+      columns: [cc, loc, pc]
+      transform: signed_log1p
+    cc_only:
+      source: csv
+      path: data/derived/dacos/designite_metrics.csv
+      key: sample_idx
+      columns: [cc]
+      transform: signed_log1p
+    pc_only:
+      source: csv
+      path: data/derived/dacos/designite_metrics.csv
+      key: sample_idx
+      columns: [pc]
+      transform: signed_log1p
+
+  # metamorphic variants {variant: {feature set: spec}}, see metamorphic.yml
+  variants: {}
+
+  models:
+    logreg:
+      type: logistic_regression
+      C: 1.0
+      class_weight: balanced
+      max_iter: 2000
+    dt3:
+      type: decision_tree
+      max_depth: 3
+    xgb:
+      type: xgboost
+      n_estimators: 200
+      max_depth: 5
+      lr: 0.1
+  runs:
+    - {features: [size_features], model: logreg}
+    - {features: [size_features], model: dt3}
+    - {features: [size_features], model: xgb}
+    - {features: [loc_only], model: logreg}
+    - {features: [loc_only], model: dt3}
+    - {features: [loc_only], model: xgb}
+    - {features: [params_only], model: logreg}
+    - {features: [params_only], model: dt3}
+    - {features: [params_only], model: xgb}
+    - {features: [designite], model: logreg}
+    - {features: [designite], model: dt3}
+    - {features: [designite], model: xgb}
+    - {features: [cc_only], model: logreg}
+    - {features: [cc_only], model: dt3}
+    - {features: [cc_only], model: xgb}
+    - {features: [pc_only], model: logreg}
+    - {features: [pc_only], model: dt3}
+    - {features: [pc_only], model: xgb}

@@ -1,0 +1,152 @@
+# Frozen code-model embeddings of the DACOS method snippets (same models as code_embeddings.yml).
+#   CONFIG=config/experiments/dacos_embeddings.yml sbatch scripts/slurm/embed_code_models.sbatch
+run:
+  name: dacos_embeddings
+
+code_embeddings:
+  folds: artifacts/folds/dacos_cv.json
+  input_json: data/derived/dacos/dacos_methods.normalized.json
+  # base JSON of a variant input_json (the same file for the base run)
+  base_json: data/derived/dacos/dacos_methods.normalized.json
+  models_dir: data/models
+  out_dir: artifacts/dacos/embeddings
+  limit: null          # embed only the first N json indices of the folds (smoke tests)
+  only: null           # list of model names to run, null for all
+  max_length_cap: null # upper bound on every model's max_length
+  device: auto         # cuda, then mps, then cpu
+  log_every: 50        # progress line every N batches
+
+  defaults:
+    kind: encoder              # encoder | decoder | embedding
+    pooling: mean              # cls | mean | last_token | model_output, or a list (first one goes to emb.npy)
+    layers: [-1]               # hidden_states indices, first one goes to emb.npy
+    max_length: 512            # tokens per input, special and instruction tokens included
+    long_input: truncate       # truncate | chunk_mean
+    stride: 128                # window overlap in tokens for chunk_mean
+    max_chunks: null
+    instruction: null          # text placed between the leading special tokens and the code
+    prefix_tokens: []          # tokens placed right after the leading special tokens
+    whitespace: keep           # keep | collapse
+    padding_side: null         # null keeps the tokenizer default
+    normalize: false           # L2 normalisation of the pooled vector
+    dtype: float32
+    batch_size: 32
+    max_batch_tokens: null     # bound on rows x padded width of a batch
+    trust_remote_code: false
+    loader: auto               # auto | t5_encoder_proj
+    forward_kwargs: {}
+
+  models:
+    - name: codebert
+      path: microsoft__codebert-base
+      pooling: [mean, cls]
+      whitespace: collapse
+      batch_size: 64
+    - name: codebert_chunk
+      path: microsoft__codebert-base
+      long_input: chunk_mean
+      whitespace: collapse
+      batch_size: 64
+    - name: graphcodebert
+      path: microsoft__graphcodebert-base
+      pooling: [mean, cls]
+      whitespace: collapse
+      batch_size: 64
+    - name: unixcoder
+      path: microsoft__unixcoder-base
+      prefix_tokens: ["<encoder-only>", "</s>"]
+      max_length: 1024
+      whitespace: collapse
+      batch_size: 32
+    # T5 encoder plus the checkpoint projection, rebuilt outside its remote code
+    - name: codet5p_110m
+      path: Salesforce__codet5p-110m-embedding
+      kind: embedding
+      loader: t5_encoder_proj
+      pooling: model_output
+      normalize: true
+      batch_size: 64
+    - name: codesage_base_v2
+      path: codesage__codesage-base-v2
+      kind: embedding
+      max_length: 1024
+      normalize: true
+      trust_remote_code: true
+      batch_size: 32
+    - name: jina_code_v2
+      path: jinaai__jina-embeddings-v2-base-code
+      kind: embedding
+      max_length: 8192
+      trust_remote_code: true
+      batch_size: 64
+      max_batch_tokens: 32768
+    - name: sfr_code_400m
+      path: Salesforce__SFR-Embedding-Code-400M_R
+      kind: embedding
+      pooling: cls
+      max_length: 8192
+      trust_remote_code: true
+      batch_size: 64
+      max_batch_tokens: 32768
+    - name: modernbert
+      path: answerdotai__ModernBERT-base
+      pooling: [mean, cls]
+      max_length: 8192
+      batch_size: 64
+      max_batch_tokens: 32768
+    - name: qwen3_emb_06b
+      path: Qwen__Qwen3-Embedding-0.6B
+      kind: embedding
+      pooling: last_token
+      padding_side: left
+      instruction: "Instruct: Given a Java method, identify the code smells it contains (complex method, long parameter list)\nQuery:"
+      max_length: 8192
+      normalize: true
+      dtype: bfloat16
+      batch_size: 32
+      max_batch_tokens: 32768
+      forward_kwargs: {use_cache: false}
+    # same model without the instruction
+    - name: qwen3_emb_06b_noinst
+      path: Qwen__Qwen3-Embedding-0.6B
+      kind: embedding
+      pooling: last_token
+      padding_side: left
+      max_length: 8192
+      normalize: true
+      dtype: bfloat16
+      batch_size: 32
+      max_batch_tokens: 32768
+      forward_kwargs: {use_cache: false}
+    - name: qwen3_emb_4b
+      path: Qwen__Qwen3-Embedding-4B
+      kind: embedding
+      pooling: last_token
+      padding_side: left
+      instruction: "Instruct: Given a Java method, identify the code smells it contains (complex method, long parameter list)\nQuery:"
+      max_length: 8192
+      normalize: true
+      dtype: bfloat16
+      batch_size: 16
+      max_batch_tokens: 32768
+      forward_kwargs: {use_cache: false}
+    - name: qwen25_coder_15b
+      path: Qwen__Qwen2.5-Coder-1.5B
+      kind: decoder
+      pooling: [mean, last_token]
+      layers: [-1, 7, 14, 21]
+      max_length: 8192
+      dtype: bfloat16
+      batch_size: 16
+      max_batch_tokens: 32768
+      forward_kwargs: {use_cache: false}
+    - name: qwen25_coder_7b_instruct
+      path: Qwen__Qwen2.5-Coder-7B-Instruct
+      kind: decoder
+      pooling: [mean, last_token]
+      layers: [-1, 14]
+      max_length: 8192
+      dtype: bfloat16
+      batch_size: 8
+      max_batch_tokens: 16384
+      forward_kwargs: {use_cache: false}

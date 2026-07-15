@@ -1,0 +1,109 @@
+# Linear probes on frozen code-model embeddings of the DACOS method snippets.
+#   python scripts/cv/cv_tabular.py --config config/experiments/dacos_probes.yml
+#   python scripts/cv/cv_tabular.py --config config/experiments/dacos_probes.yml --shard-index 0 --shard-count 4
+run:
+  name: dacos_probes
+
+tabular_cv:
+  folds: artifacts/folds/dacos_cv.json
+  input_json: data/derived/dacos/dacos_methods.normalized.json
+  # checked against meta.label_order of the folds file
+  label_order: [is_complex_method, is_long_parameter_list]
+  strategies: [kfold, group_kfold]
+  seeds: null
+  threshold_steps: 101
+  out_dir: artifacts/dacos/code_probes
+  selection_metric: pr_auc_macro
+  # true keeps runs whose records.json holds all their folds
+  skip_existing: false
+  # error stops on a missing feature file, skip leaves out the runs that need it
+  missing_features: error
+
+  feature_sets:
+    # DesigniteJava cyclomatic complexity, lines of code and parameter count
+    designite:
+      source: csv
+      path: data/derived/dacos/designite_metrics.csv
+      key: sample_idx
+      columns: [cc, loc, pc]
+    # primary embedding of each model (emb.npy)
+    emb_codebert: {source: npy, path: artifacts/dacos/embeddings/codebert/emb.npy, index: artifacts/dacos/embeddings/codebert/index.json}
+    emb_codebert_chunk: {source: npy, path: artifacts/dacos/embeddings/codebert_chunk/emb.npy, index: artifacts/dacos/embeddings/codebert_chunk/index.json}
+    emb_graphcodebert: {source: npy, path: artifacts/dacos/embeddings/graphcodebert/emb.npy, index: artifacts/dacos/embeddings/graphcodebert/index.json}
+    emb_unixcoder: {source: npy, path: artifacts/dacos/embeddings/unixcoder/emb.npy, index: artifacts/dacos/embeddings/unixcoder/index.json}
+    emb_codet5p_110m: {source: npy, path: artifacts/dacos/embeddings/codet5p_110m/emb.npy, index: artifacts/dacos/embeddings/codet5p_110m/index.json}
+    emb_modernbert: {source: npy, path: artifacts/dacos/embeddings/modernbert/emb.npy, index: artifacts/dacos/embeddings/modernbert/index.json}
+    emb_qwen3_emb_06b: {source: npy, path: artifacts/dacos/embeddings/qwen3_emb_06b/emb.npy, index: artifacts/dacos/embeddings/qwen3_emb_06b/index.json}
+    emb_qwen3_emb_06b_noinst: {source: npy, path: artifacts/dacos/embeddings/qwen3_emb_06b_noinst/emb.npy, index: artifacts/dacos/embeddings/qwen3_emb_06b_noinst/index.json}
+    emb_qwen3_emb_4b: {source: npy, path: artifacts/dacos/embeddings/qwen3_emb_4b/emb.npy, index: artifacts/dacos/embeddings/qwen3_emb_4b/index.json}
+    emb_qwen25_coder_15b: {source: npy, path: artifacts/dacos/embeddings/qwen25_coder_15b/emb.npy, index: artifacts/dacos/embeddings/qwen25_coder_15b/index.json}
+    emb_qwen25_coder_7b_instruct: {source: npy, path: artifacts/dacos/embeddings/qwen25_coder_7b_instruct/emb.npy, index: artifacts/dacos/embeddings/qwen25_coder_7b_instruct/index.json}
+    # pooling ablations (first-token state instead of the mean)
+    emb_codebert_cls: {source: npy, path: artifacts/dacos/embeddings/codebert/emb_cls_layer12.npy, index: artifacts/dacos/embeddings/codebert/index.json}
+    emb_graphcodebert_cls: {source: npy, path: artifacts/dacos/embeddings/graphcodebert/emb_cls_layer12.npy, index: artifacts/dacos/embeddings/graphcodebert/index.json}
+    emb_modernbert_cls: {source: npy, path: artifacts/dacos/embeddings/modernbert/emb_cls_layer22.npy, index: artifacts/dacos/embeddings/modernbert/index.json}
+    emb_qwen25_coder_15b_last: {source: npy, path: artifacts/dacos/embeddings/qwen25_coder_15b/emb_last_token_layer28.npy, index: artifacts/dacos/embeddings/qwen25_coder_15b/index.json}
+    emb_qwen25_coder_7b_instruct_last: {source: npy, path: artifacts/dacos/embeddings/qwen25_coder_7b_instruct/emb_last_token_layer28.npy, index: artifacts/dacos/embeddings/qwen25_coder_7b_instruct/index.json}
+    # layer sweep of the decoders (mean pooling of intermediate layers)
+    emb_qwen25_coder_15b_l7: {source: npy, path: artifacts/dacos/embeddings/qwen25_coder_15b/emb_mean_layer7.npy, index: artifacts/dacos/embeddings/qwen25_coder_15b/index.json}
+    emb_qwen25_coder_15b_l14: {source: npy, path: artifacts/dacos/embeddings/qwen25_coder_15b/emb_mean_layer14.npy, index: artifacts/dacos/embeddings/qwen25_coder_15b/index.json}
+    emb_qwen25_coder_15b_l21: {source: npy, path: artifacts/dacos/embeddings/qwen25_coder_15b/emb_mean_layer21.npy, index: artifacts/dacos/embeddings/qwen25_coder_15b/index.json}
+    emb_qwen25_coder_7b_instruct_l14: {source: npy, path: artifacts/dacos/embeddings/qwen25_coder_7b_instruct/emb_mean_layer14.npy, index: artifacts/dacos/embeddings/qwen25_coder_7b_instruct/index.json}
+
+  models:
+    logreg_C1e-5: {type: logistic_regression, C: 0.00001}
+    logreg_C1e-4: {type: logistic_regression, C: 0.0001}
+    logreg_C1e-3: {type: logistic_regression, C: 0.001}
+    logreg_C1e-2: {type: logistic_regression, C: 0.01}
+    logreg_C1e-1: {type: logistic_regression, C: 0.1}
+    logreg_C1: {type: logistic_regression, C: 1.0}
+    logreg_C10: {type: logistic_regression, C: 10.0}
+    logreg_C100: {type: logistic_regression, C: 100.0}
+
+  # C candidates chosen per fold on validation
+  probe_candidates: &probe [logreg_C1e-5, logreg_C1e-4, logreg_C1e-3, logreg_C1e-2, logreg_C1e-1, logreg_C1,
+                            logreg_C10, logreg_C100]
+
+  # metamorphic variants {variant: {feature set: {path, index}}} rescored on each test part
+  variants: {}
+
+  runs:
+    # reference: Designite metrics through the same probe
+    - {name: designite__probe, features: [designite], model_candidates: *probe}
+    # one probe per model
+    - {name: codebert__probe, features: [emb_codebert], model_candidates: *probe}
+    - {name: graphcodebert__probe, features: [emb_graphcodebert], model_candidates: *probe}
+    - {name: unixcoder__probe, features: [emb_unixcoder], model_candidates: *probe}
+    - {name: codet5p_110m__probe, features: [emb_codet5p_110m], model_candidates: *probe}
+    - {name: modernbert__probe, features: [emb_modernbert], model_candidates: *probe}
+    - {name: qwen3_emb_06b__probe, features: [emb_qwen3_emb_06b], model_candidates: *probe}
+    - {name: qwen3_emb_4b__probe, features: [emb_qwen3_emb_4b], model_candidates: *probe}
+    - {name: qwen25_coder_15b__probe, features: [emb_qwen25_coder_15b], model_candidates: *probe}
+    - {name: qwen25_coder_7b_instruct__probe, features: [emb_qwen25_coder_7b_instruct], model_candidates: *probe}
+    # input ablations: overlapping windows instead of truncation, no instruction
+    - {name: codebert_chunk__probe, features: [emb_codebert_chunk], model_candidates: *probe}
+    - {name: qwen3_emb_06b_noinst__probe, features: [emb_qwen3_emb_06b_noinst], model_candidates: *probe}
+    # pooling ablations
+    - {name: codebert_cls__probe, features: [emb_codebert_cls], model_candidates: *probe}
+    - {name: graphcodebert_cls__probe, features: [emb_graphcodebert_cls], model_candidates: *probe}
+    - {name: modernbert_cls__probe, features: [emb_modernbert_cls], model_candidates: *probe}
+    - {name: qwen25_coder_15b_last__probe, features: [emb_qwen25_coder_15b_last], model_candidates: *probe}
+    - {name: qwen25_coder_7b_instruct_last__probe, features: [emb_qwen25_coder_7b_instruct_last], model_candidates: *probe}
+    # layer sweep
+    - {name: qwen25_coder_15b_l7__probe, features: [emb_qwen25_coder_15b_l7], model_candidates: *probe}
+    - {name: qwen25_coder_15b_l14__probe, features: [emb_qwen25_coder_15b_l14], model_candidates: *probe}
+    - {name: qwen25_coder_15b_l21__probe, features: [emb_qwen25_coder_15b_l21], model_candidates: *probe}
+    - {name: qwen25_coder_7b_instruct_l14__probe, features: [emb_qwen25_coder_7b_instruct_l14], model_candidates: *probe}
+    # best embedding plus Designite, embedding chosen per fold on validation
+    - name: best_embedding+designite__probe
+      feature_candidates:
+        - [emb_codebert, designite]
+        - [emb_graphcodebert, designite]
+        - [emb_unixcoder, designite]
+        - [emb_codet5p_110m, designite]
+        - [emb_modernbert, designite]
+        - [emb_qwen3_emb_06b, designite]
+        - [emb_qwen3_emb_4b, designite]
+        - [emb_qwen25_coder_15b, designite]
+        - [emb_qwen25_coder_7b_instruct, designite]
+      model_candidates: *probe

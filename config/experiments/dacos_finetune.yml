@@ -1,0 +1,19 @@
+# Fine-tuned code encoders on the DACOS method snippets, same setup as code_finetune.yml.
+#   CONFIG=config/experiments/dacos_finetune.yml sbatch --array=0-5%2 scripts/slurm/code_finetune.sbatch
+#   CONFIG=config/experiments/dacos_finetune.yml COLLECT=1 bash scripts/slurm/code_finetune.sbatch
+_include_yml: code_finetune.yml
+
+run:
+  name: dacos_finetune
+
+code_finetune:
+  folds: artifacts/folds/dacos_cv.json
+  input_json: data/derived/dacos/dacos_methods.normalized.json
+  # checked against meta.label_order of the folds file
+  label_order: [is_complex_method, is_long_parameter_list]
+  # items go to <out_dir>/<run.name>/<model>/<strategy>_s<seed>_f<fold>/
+  out_dir: artifacts/dacos/code_finetune
+  strategies: [kfold, group_kfold]
+  # metamorphic variants scored after training ({name: normalized JSON})
+  eval_variants: {}
+  run_models: [codebert, graphcodebert, unixcoder, modernbert_1024, modernbert_2048]

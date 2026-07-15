@@ -1,0 +1,29 @@
+# DACOS scored only where the annotators were offered the smell
+# (scripts/cv/eval_eligible.py).
+eligible_eval:
+  sample_meta: data/derived/dacos/dacos_sample_meta.csv
+  label_order: [is_complex_method, is_long_parameter_list]
+  eligibility_columns:
+    is_complex_method: offered_complex_method
+    is_long_parameter_list: offered_long_parameter_list
+  threshold_steps: 101
+  out_dir: artifacts/dacos/offered_eval
+  inputs:
+    - {name: size_features__logreg, predictions: artifacts/dacos/tabular_cv/size_features__logreg/predictions.jsonl}
+    - {name: size_features__dt3, predictions: artifacts/dacos/tabular_cv/size_features__dt3/predictions.jsonl}
+    - {name: size_features__xgb, predictions: artifacts/dacos/tabular_cv/size_features__xgb/predictions.jsonl}
+    - {name: loc_only__logreg, predictions: artifacts/dacos/tabular_cv/loc_only__logreg/predictions.jsonl}
+    - {name: loc_only__dt3, predictions: artifacts/dacos/tabular_cv/loc_only__dt3/predictions.jsonl}
+    - {name: loc_only__xgb, predictions: artifacts/dacos/tabular_cv/loc_only__xgb/predictions.jsonl}
+    - {name: params_only__logreg, predictions: artifacts/dacos/tabular_cv/params_only__logreg/predictions.jsonl}
+    - {name: params_only__dt3, predictions: artifacts/dacos/tabular_cv/params_only__dt3/predictions.jsonl}
+    - {name: params_only__xgb, predictions: artifacts/dacos/tabular_cv/params_only__xgb/predictions.jsonl}
+    - {name: designite__logreg, predictions: artifacts/dacos/tabular_cv/designite__logreg/predictions.jsonl}
+    - {name: designite__dt3, predictions: artifacts/dacos/tabular_cv/designite__dt3/predictions.jsonl}
+    - {name: designite__xgb, predictions: artifacts/dacos/tabular_cv/designite__xgb/predictions.jsonl}
+    - {name: cc_only__logreg, predictions: artifacts/dacos/tabular_cv/cc_only__logreg/predictions.jsonl}
+    - {name: cc_only__dt3, predictions: artifacts/dacos/tabular_cv/cc_only__dt3/predictions.jsonl}
+    - {name: cc_only__xgb, predictions: artifacts/dacos/tabular_cv/cc_only__xgb/predictions.jsonl}
+    - {name: pc_only__logreg, predictions: artifacts/dacos/tabular_cv/pc_only__logreg/predictions.jsonl}
+    - {name: pc_only__dt3, predictions: artifacts/dacos/tabular_cv/pc_only__dt3/predictions.jsonl}
+    - {name: pc_only__xgb, predictions: artifacts/dacos/tabular_cv/pc_only__xgb/predictions.jsonl}

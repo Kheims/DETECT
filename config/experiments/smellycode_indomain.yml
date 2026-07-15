@@ -1,0 +1,9 @@
+_include_yml: ts_baseline.yml
+
+# In-domain reference: same model trained and tested on SmellyCode++ with a
+# random split (MLCQ projects removed by scripts/data/convert_smellycode.py).
+run:
+  name: smellycode_indomain
+
+construction:
+  input_json: data/transfer/smellycode_pp/smellycode.normalized.json

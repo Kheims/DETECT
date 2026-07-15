@@ -1,0 +1,28 @@
+# Size features and Designite metrics of the DACOS method snippets.
+#   python scripts/data/extract_size_features.py --config config/experiments/dacos_size.yml
+# For a metamorphic variant, override inputs.normalized_json and size_features.out_csv and set --entry_metrics.enabled=false.
+run:
+  name: dacos_size
+
+inputs:
+  normalized_json: data/derived/dacos/dacos_methods.normalized.json
+  # base JSON of a variant normalized_json (the same file for the base run)
+  base_json: data/derived/dacos/dacos_methods.normalized.json
+
+size_features:
+  out_csv: data/derived/dacos/size_features.csv
+  # same wrapping as for MLCQ
+  wrapper_prefix: "public class SnippetWrapper {\n"
+  wrapper_suffix: "\n}\n"
+  workers: 8
+
+# the review metadata is MLCQ only
+sample_meta:
+  enabled: false
+
+# cyclomatic complexity, lines of code and parameter count from DesigniteJava
+entry_metrics:
+  enabled: true
+  field: designite
+  columns: [cc, loc, pc]
+  out_csv: data/derived/dacos/designite_metrics.csv
