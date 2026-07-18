@@ -1,0 +1,329 @@
+# Industrial evaluation: effort-aware ranking, PMD and DesigniteJava on MLCQ and DACOS, project scan.
+# python scripts/analysis/effort_aware.py --config config/experiments/industrial.yml (same with
+# scripts/analysis/run_pmd.py and scripts/analysis/scan_projects.py)
+run:
+  name: industrial
+
+report: artifacts/industrial/industrial.json
+
+figures:
+  dir: artifacts/industrial/figures
+  dpi: 200
+  font_size: 9
+  level_labels: {method: "methods", class: "classes"}
+
+# smell -> level of the samples reviewed for it (data/derived/mlcq_sample_meta.csv)
+label_levels:
+  is_feature_envy: method
+  is_long_method: method
+  is_blob: class
+  is_data_class: class
+smell_labels: {is_feature_envy: Feature Envy, is_long_method: Long Method, is_blob: Blob, is_data_class: Data Class}
+
+effort_aware:
+  folds: artifacts/folds/mlcq_cv.json
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  sample_meta: data/derived/mlcq_sample_meta.csv
+  level_column: level
+  size_features: data/derived/size_features.csv
+  size_key: sample_idx
+  # effort of inspecting a sample: non-blank LOC plus a constant per item
+  effort_column: loc_nonblank
+  effort_models: {loc: 0, loc_plus_10: 10}
+  main_effort_model: loc
+  # number of reviews of each smell per sample (a sample of the level may have none)
+  review_columns: {is_feature_envy: n_reviews_fe, is_long_method: n_reviews_lm, is_blob: n_reviews_blob,
+                   is_data_class: n_reviews_dc}
+  strategies: [kfold]
+  threshold_steps: 101
+  # share of the effort for Recall@20%Effort and PCI@20%
+  effort_budget: 0.2
+  # Precision@10%: precision of the top 10% of the samples
+  top_fraction: 0.1
+  # random orders of tied scores averaged per metric
+  tie_permutations: 20
+  # random ranking baseline: random orders per fold
+  random_permutations: 100
+  seed: 0
+  # points of the Alberg curves (share of LOC inspected)
+  curve_points: 101
+  reference: size_logreg
+  out_dir: artifacts/industrial/effort_aware
+  # records are only used to check the re-tuned thresholds against the reported MCC
+  families:
+    size_logreg:
+      label: "size (logistic regression)"
+      predictions: [artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl]
+      records: artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/records.json
+    designite_xgb:
+      label: "XGBoost, Designite metrics"
+      predictions: [artifacts/tabular_cv/tabular_cv/designite__xgb/predictions.jsonl]
+      records: artifacts/tabular_cv/tabular_cv/designite__xgb/records.json
+    designite_rel_level_dt:
+      label: "decision tree, metrics + accesses + level"
+      predictions: ["artifacts/tabular_cv/tabular_cv/designite+relational_l0+level__dt/predictions.jsonl"]
+      records: "artifacts/tabular_cv/tabular_cv/designite+relational_l0+level__dt/records.json"
+    gcn:
+      label: "GCN on AST"
+      predictions: ["artifacts/runs/*/predictions.jsonl"]
+      records: artifacts/reports/gnn_cv/records.json
+      records_filter: {"training.architecture": gcn, "training.loss": focal}
+    unixcoder:
+      label: "UniXcoder fine-tuned"
+      predictions: ["artifacts/code_finetune/code_finetune/unixcoder/kfold_*/predictions.jsonl"]
+      records: artifacts/code_finetune/merged/unixcoder/records.json
+    modernbert_2048:
+      label: "ModernBERT 2k fine-tuned"
+      predictions: ["artifacts/code_finetune/code_finetune/modernbert_2048/kfold_*/predictions.jsonl"]
+      records: artifacts/code_finetune/merged/modernbert_2048/records.json
+    modernbert_1024:
+      label: "ModernBERT 1k fine-tuned"
+      predictions: ["artifacts/code_finetune/code_finetune/modernbert_1024/kfold_*/predictions.jsonl"]
+      records: artifacts/code_finetune/merged/modernbert_1024/records.json
+    codebert_ft:
+      label: "CodeBERT fine-tuned"
+      predictions: ["artifacts/code_finetune/code_finetune/codebert/kfold_*/predictions.jsonl"]
+      records: artifacts/code_finetune/merged/codebert/records.json
+    graphcodebert_ft:
+      label: "GraphCodeBERT fine-tuned"
+      predictions: ["artifacts/code_finetune/code_finetune/graphcodebert/kfold_*/predictions.jsonl"]
+      records: artifacts/code_finetune/merged/graphcodebert/records.json
+    probe_qwen15b_l14:
+      label: "probe Qwen 1.5B"
+      predictions: ["artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard*of4/predictions.jsonl"]
+      records: "artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard*of4/records.json"
+    probe_codebert:
+      label: "probe CodeBERT"
+      predictions: ["artifacts/tabular_cv/code_probes/codebert__probe_shard*of4/predictions.jsonl"]
+      records: "artifacts/tabular_cv/code_probes/codebert__probe_shard*of4/records.json"
+    qwen36_zeroshot:
+      label: "Qwen3.6-27B zero-shot"
+      predictions: [artifacts/llm_judge_cv/qwen36_27b_fp8/predictions.jsonl]
+      records: artifacts/llm_judge_cv/qwen36_27b_fp8/records.json
+    qwen7b_zeroshot:
+      label: "Qwen 7B zero-shot"
+      predictions: [artifacts/llm_judge_cv/qwen25_coder_7b_instruct/predictions.jsonl]
+      records: artifacts/llm_judge_cv/qwen25_coder_7b_instruct/records.json
+    # probability average
+    ensemble4:
+      label: "mean of GCN, size, XGBoost and Qwen 7B"
+      members: [gcn, size_logreg, designite_xgb, qwen7b_zeroshot]
+      records: artifacts/analysis/predictions/ensembles/gcn+size+xgb+qwen7b/records.json
+  baseline_labels:
+    loc_desc: "largest LOC first"
+    loc_asc: "smallest LOC first"
+    random: "random"
+    optimal: "optimal"
+  alberg:
+    families: [size_logreg, designite_xgb, gcn, unixcoder, qwen36_zeroshot, ensemble4]
+    baselines: [loc_asc, loc_desc]
+    size: [12.0, 3.4]
+    xlabel: {loc: "share of LOC inspected", loc_plus_10: "share of effort inspected (LOC + 10 per item)"}
+    ylabel: "share of positives found"
+  # LaTeX table of the main effort model
+  table:
+    families: [size_logreg, designite_xgb, designite_rel_level_dt, gcn, unixcoder, modernbert_2048,
+               probe_qwen15b_l14, qwen36_zeroshot, qwen7b_zeroshot, ensemble4]
+    baselines: [loc_desc, loc_asc, random, optimal]
+    header: ["", "R@20\\%", "$P_{opt}$", "IFA", "PCI@20\\%", "P@10\\%", "R@20\\% (density)", "$P_{opt}$ (density)"]
+  prevalence:
+    # PPV(pi) from the fold sensitivity and specificity at the val-tuned threshold
+    low: 0.001
+    high: 0.5
+    points: 200
+    table: [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5]
+    families: [size_logreg, designite_xgb, gcn, unixcoder, qwen36_zeroshot, ensemble4]
+    size: [12.0, 3.4]
+    xlabel: "prevalence (log scale)"
+    ylabel: "expected precision (PPV)"
+
+# quotes copied into the report by scripts/analysis/effort_aware.py
+literature:
+  mlcq_sampling:
+    source: "Madeyski and Lewowski, MLCQ: Industry-Relevant Code Smell Data Set, EASE 2020, pp. 342-347, doi:10.1145/3383219.3383264 (metadata checked on Crossref), Section 3.3 'Smell selection and gathering reviews of code samples'; quotes taken from the authors' preprint https://madeyski.e-informatyka.pl/download/MadeyskiLewowski20EASE.pdf (6 pages, fetched 2026-10-05)"
+    datasheet: "Lewowski and Madeyski, MLCQ: Datasheet (online appendix), file MadeyskiLewowskiMLCQAppendix.pdf, Section 2.2 Sampling design (local copy data/mlcq_zenodo/), same four phases"
+    answer: "Random within a level, not enriched by a detector: in phases 1 to 3 the level (class or method) was drawn with equal probability, then a unit was drawn at random (phase 1 from a 1% subset after a query defect, phase 3 only among units longer than 4 lines). Phase 4 selected no new unit: it added crosscheck reviews to units already rated above 'none'. Reviewers could skip samples and choose which smells of the level to rate. Classes are over-represented relative to methods, so prevalence must be read per level."
+    quotes:
+      - "Developer is free to skip any sample that he or she is uncertain of."
+      - "Developer can choose whether she or he wants to assess the severity of both smells on a given, class or method, level or only one of them."
+      - "Sample selection was not uniform during data acquisition, and there were four phases."
+      - "In the first two phases, we sampled from 678278 classes and 5101141 functions from 785 projects (7 projects could not be analysed), the third one - from 552750 classes and 2297722 functions (due to filtering out less than 4 line samples) from 785 projects while in the last phase we only performed crosscheck on already reviewed samples"
+      - "(1) The first 2175 samples (date range: March 27, 2019 - April 2, 2019) were selected when there was a defect in randomisation part of selection query, and only 1 sample from each hundred could have been selected. Nevertheless, they were still selected randomly, but from a smaller population"
+      - "(2) The next 2648 samples (date range: April 3, 2019 - April 12, 2019) were selected randomly from all available."
+      - "(3) The next 4801 samples (date range: April 13, 2019 - July 25, 2019) were selected randomly from all samples longer than 4 lines, including opening and closing braces. This was the only filtering rule, and it was only removing most trivial functions and classes."
+      - "(4) The last 5115 samples (date range: July 26, 2019 - September 13, 2019) were selected to perform a crosscheck"
+      - "only from samples already tagged with severity higher than 'none'. Samples selected from crosscheck were those that had only 1 review or 2 reviews with different severities."
+      - "Then it turned out that the amount of \"none\" samples is higher that we have estimated, thus the need to focus the effort of professional developers on valuable samples that can reasonably constitute code smells to balance the data set."
+      - "Since there were many more method samples than class samples, and we wanted to gather similar number of both, we decided that the first selection step in the first three phases will be selecting whether we are looking for a class sample or method sample (and both were selected with equal probability)."
+      - "We did conduct an additional crosscheck in the end of research to verify the samples and assigned smell severities. However, we only did this with samples that were initially tagged with severity above none"
+      - "it is possible that some samples which should have severity above none do not have it."
+      - "While we did gather nearly 15 thousand samples, over 77% show no smells (none severity)."
+    phase_counts_are: "reviews (2175 + 2648 + 4801 + 5115 = 14739 reviews of 4770 code samples)"
+  # section numbers below come from the external review, not checked against the papers
+  yang_2016:
+    source: "Yang, Zhou, Liu, Zhao, Lu, Xu, Xu and Leung, Effort-aware just-in-time defect prediction: simple unsupervised models could be better than supervised models, FSE 2016, pp. 157-168, doi:10.1145/2950290.2950353"
+    used_for: "normalized Popt (Section 3.5 per the external review) and the strength of simple unsupervised size rankings under effort-aware metrics"
+    abstract_quote: "The experimental results, from open-source software systems, show that many simple unsupervised models perform better than the state-of-the-art supervised models in effort-aware JIT defect prediction."
+  mende_koschke_2009:
+    source: "Mende and Koschke, Revisiting the evaluation of defect prediction models, PROMISE 2009, pp. 1-10, doi:10.1145/1540438.1540448"
+    used_for: "origin of Popt"
+  huang_2017:
+    source: "Huang, Xia and Lo, Supervised vs Unsupervised Models: A Holistic Look at Effort-Aware Just-in-Time Defect Prediction, ICSME 2017, pp. 159-170, doi:10.1109/icsme.2017.51"
+    used_for: "IFA and PCI@20%"
+    abstract_quote: "(1) Under the same inspection budget, LT requires developers to inspect a large number of changes, necessitating many more context switches. (2) Although LT finds more defective changes, many highly ranked changes are false alarms."
+  kamei_2013:
+    source: "Kamei, Shihab, Adams, Hassan, Mockus, Sinha and Ubayashi, A large-scale empirical study of just-in-time quality assurance, IEEE TSE 39(6), 2013, pp. 757-773, doi:10.1109/tse.2012.70"
+    used_for: "Recall@20%Effort (Section 5.3 per the external review) and the density ranking (effort-aware linear regression)"
+
+pmd:
+  home: tools/pmd/pmd-bin-7.28.0
+  release: "7.28.0"
+  url: https://github.com/pmd/pmd/releases/download/pmd_releases/7.28.0/pmd-dist-7.28.0-bin.zip
+  sha256: f974ba571f7bc01c73fffe11bade25fbc1f438698f9e9c00e416e8d65e9fbac2
+  threads: 8
+  # false reruns PMD instead of reusing a complete earlier report
+  reuse_reports: true
+  work_dir: artifacts/industrial/pmd/work
+  out_dir: artifacts/industrial/pmd
+  rules_category: category/java/design.xml
+  # default pass: every rule with its default properties
+  rules: [GodClass, DataClass, NcssCount, CyclomaticComplexity, CognitiveComplexity, NPathComplexity,
+          ExcessiveParameterList, TooManyMethods, TooManyFields, CouplingBetweenObjects, LawOfDemeter,
+          ExcessiveImports]
+  # minimum pass: reporting thresholds lowered so that every unit gets a value
+  minimum_properties:
+    NcssCount: {methodReportLevel: 1, classReportLevel: 1}
+    CyclomaticComplexity: {methodReportLevel: 1, classReportLevel: 1}
+    CognitiveComplexity: {reportLevel: 1}
+    NPathComplexity: {reportLevel: 1}
+    ExcessiveParameterList: {minimum: 1}
+    CouplingBetweenObjects: {threshold: 1}
+    ExcessiveImports: {minimum: 1}
+  threshold_steps: 101
+  # lines between a method name and its ExcessiveParameterList report
+  parameter_list_offset: 2
+  mlcq:
+    input_json: data/MLCQCodeSmellSamples.normalized.json
+    folds: artifacts/folds/mlcq_cv.json
+    sample_meta: data/derived/mlcq_sample_meta.csv
+    snapshots: data/repo_snapshots
+    strategies: [kfold]
+    # binary: default pass violation, score: minimum pass value, property: rule property tuned on validation
+    detectors:
+      is_blob:
+        - {name: GodClass, binary: GodClass, score: GodClass.WMC}
+        - {name: TooManyMethods, binary: TooManyMethods, score: TooManyMethods}
+        - {name: ExcessiveImports, binary: ExcessiveImports, score: ExcessiveImports.value, property: minimum}
+        - {name: CouplingBetweenObjects, binary: CouplingBetweenObjects, score: CouplingBetweenObjects.value, property: threshold, comparison: ">",
+           note: "fires when the coupling is strictly above threshold (consistency.class.CouplingBetweenObjects of pmd_mlcq: the smallest value flagged at the default 20 is 21); the minimum pass (threshold 1) cannot tell coupling 0 from 1"}
+        - {name: "class CyclomaticComplexity (WMC)", binary: CyclomaticComplexity, score: CyclomaticComplexity.value, property: classReportLevel}
+        - {name: "class NcssCount", binary: NcssCount, score: NcssCount.value, property: classReportLevel}
+        - {name: "any of GodClass, TooManyMethods, ExcessiveImports, CouplingBetweenObjects", any: [GodClass, TooManyMethods, ExcessiveImports, CouplingBetweenObjects]}
+      is_data_class:
+        - {name: DataClass, binary: DataClass, score: DataClass.NOPA+NOAM}
+        - {name: TooManyFields, binary: TooManyFields, score: TooManyFields}
+      is_long_method:
+        - {name: NcssCount, binary: NcssCount, score: NcssCount.value, property: methodReportLevel}
+        - {name: CyclomaticComplexity, binary: CyclomaticComplexity, score: CyclomaticComplexity.value, property: methodReportLevel}
+        - {name: CognitiveComplexity, binary: CognitiveComplexity, score: CognitiveComplexity.value, property: reportLevel}
+        - {name: NPathComplexity, binary: NPathComplexity, score: NPathComplexity.value, property: reportLevel}
+        - {name: "any of the four", any: [NcssCount, CyclomaticComplexity, CognitiveComplexity, NPathComplexity]}
+      is_feature_envy:
+        # PMD has no Feature Envy rule, LawOfDemeter is the closest one
+        - {name: LawOfDemeter, binary: LawOfDemeter, score: LawOfDemeter.count, property: "violations per method (post-processing)"}
+    # per-file latency: PMD alone on single files (one JVM each, default pass)
+    latency: {files: 30, seed: 0, threads: 1}
+  dacos:
+    input_json: data/derived/dacos/dacos_methods.normalized.json
+    folds: artifacts/folds/dacos_cv.json
+    strategies: [kfold, group_kfold]
+    wrapper_prefix: "public class Wrapper {\n"
+    wrapper_suffix: "\n}\n"
+    rules: [ExcessiveParameterList, CyclomaticComplexity, CognitiveComplexity, NcssCount, NPathComplexity]
+    detectors:
+      is_complex_method:
+        - {name: CyclomaticComplexity, binary: CyclomaticComplexity, score: CyclomaticComplexity.value, property: methodReportLevel}
+        - {name: CognitiveComplexity, binary: CognitiveComplexity, score: CognitiveComplexity.value, property: reportLevel}
+        - {name: NPathComplexity, binary: NPathComplexity, score: NPathComplexity.value, property: reportLevel}
+        - {name: NcssCount, binary: NcssCount, score: NcssCount.value, property: methodReportLevel}
+        - {name: "any of the four", any: [CyclomaticComplexity, CognitiveComplexity, NPathComplexity, NcssCount]}
+      is_long_parameter_list:
+        - {name: ExcessiveParameterList, binary: ExcessiveParameterList, score: ExcessiveParameterList.value, property: minimum}
+
+designite:
+  jar: tools/designite.jar
+  source: "DesigniteJava open-source (github.com/tushartushar/DesigniteJava), jar kept in tools/designite.jar (Main-Class Designite.Designite, built with JDK 17)"
+  input: "snippets, not snapshots: a method snippet goes into public class S<index>, a class snippet is renamed S<index>; no project context (no FANIN, no hierarchy)"
+  batch_size: 500
+  workers: 4
+  timeout_sec: 900
+  work_dir: artifacts/industrial/designite/work
+  out_dir: artifacts/industrial/designite
+  threshold_steps: 101
+  # wrapping of a method snippet ({name} = S<index>)
+  method_wrapper_prefix: "public class {name} {\n"
+  method_wrapper_suffix: "\n}\n"
+  type_metrics: [NOF, NOPF, NOM, NOPM, LOC, WMC, NC, DIT, LCOM, FANIN, FANOUT]
+  method_metrics: [LOC, CC, PC]
+  # property = DesigniteJava threshold set by the tuned configuration
+  mlcq:
+    input_json: data/MLCQCodeSmellSamples.normalized.json
+    folds: artifacts/folds/mlcq_cv.json
+    sample_meta: data/derived/mlcq_sample_meta.csv
+    strategies: [kfold]
+    detectors:
+      is_long_method:
+        - {name: Long Method, binary: Long Method, score: method_LOC_max, property: longMethod}
+        - {name: Complex Method, binary: Complex Method, score: method_CC_max, property: complexMethod}
+        - {name: "any of the two", any: [Long Method, Complex Method]}
+      is_blob:
+        - {name: Insufficient Modularization, binary: Insufficient Modularization, score: type_WMC, property: "insufficientModularizationHighComplexity (WMC only)",
+           note: "DesigniteJava also fires on a large public interface (NOPM) or many methods (NOM); the tuned configuration thresholds WMC alone"}
+        - {name: Multifaceted Abstraction, binary: Multifaceted Abstraction, score: type_LCOM, property: "multifacetedAbstractionLargeLCOM (LCOM only)",
+           note: "DesigniteJava fires only when LCOM, NOF and NOM are all large (defaults 0.8, 7 and 7: on MLCQ every flagged class meets the three and every unflagged class with LCOM >= 0.8 has NOF < 7 or NOM < 7); the tuned configuration thresholds LCOM alone"}
+        - {name: "any of the two", any: [Insufficient Modularization, Multifaceted Abstraction]}
+      is_data_class:
+        - {name: Broken Modularization, binary: Broken Modularization, score: type_NOF}
+        - {name: Deficient Encapsulation, binary: Deficient Encapsulation, score: type_NOPF}
+      # DesigniteJava has no Feature Envy smell
+  dacos:
+    input_json: data/derived/dacos/dacos_methods.normalized.json
+    folds: artifacts/folds/dacos_cv.json
+    strategies: [kfold, group_kfold]
+    detectors:
+      is_complex_method:
+        - {name: Complex Method, binary: Complex Method, score: method_CC_max, property: complexMethod}
+        - {name: Long Method, binary: Long Method, score: method_LOC_max, property: longMethod}
+      is_long_parameter_list:
+        - {name: Long Parameter List, binary: Long Parameter List, score: method_PC_max, property: longParameterList}
+
+scan:
+  snapshots: data/repo_snapshots
+  fetch_log: data/repo_snapshots/fetch_log.jsonl
+  n_projects: 20
+  # one project drawn per stratum of Java file count
+  seed: 0
+  test_marker: /test/
+  out_dir: artifacts/industrial/scan
+  # same wrapping as data/derived/size_features.csv
+  wrapper_prefix: "public class SnippetWrapper {\n"
+  wrapper_suffix: "\n}\n"
+  workers: 8
+  # files per task sent to a worker process
+  chunksize: 16
+  # alert rates also given on units longer than this (MLCQ phase 3 filter)
+  phase3_lines: 4
+  # size-only logistic regression refit on all MLCQ samples
+  shortcut_config: config/experiments/shortcut_baselines.yml
+  shortcut_run: {features: [size_features], model: logreg}
+  # random_state of the refit (lbfgs does not use it)
+  refit_seed: 42
+  # threshold = median of the 25 kfold val-tuned thresholds of this run
+  shortcut_records: artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/records.json
+  strategies: [kfold]
+  # PMD default pass on the same files: smell -> rules counted as alerts
+  pmd_alerts:
+    is_feature_envy: [LawOfDemeter]
+    is_long_method: [NcssCount, CyclomaticComplexity, CognitiveComplexity, NPathComplexity]
+    is_blob: [GodClass]
+    is_data_class: [DataClass]

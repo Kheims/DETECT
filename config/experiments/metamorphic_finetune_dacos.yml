@@ -1,0 +1,27 @@
+# UniXcoder fine-tuned on DACOS, also scoring the metamorphic variants of DACOS.
+#   CONFIG=config/experiments/metamorphic_finetune_dacos.yml sbatch --array=0-1 scripts/slurm/code_finetune.sbatch
+_include_yml: dacos_finetune.yml
+
+run:
+  name: metamorphic_finetune_dacos
+
+code_finetune:
+  out_dir: artifacts/dacos/code_finetune
+  strategies: [kfold]
+  run_models: [unixcoder]
+  eval_variants:
+    blank_inflate: data/derived/metamorphic/dacos/blank_inflate.normalized.json
+    blank_remove: data/derived/metamorphic/dacos/blank_remove.normalized.json
+    reindent: data/derived/metamorphic/dacos/reindent.normalized.json
+    neutral_comments: data/derived/metamorphic/dacos/neutral_comments.normalized.json
+    rename_locals: data/derived/metamorphic/dacos/rename_locals.normalized.json
+    shuffle_methods: data/derived/metamorphic/dacos/shuffle_methods.normalized.json
+    strip_comments: data/derived/metamorphic/dacos/strip_comments.normalized.json
+    compact: data/derived/metamorphic/dacos/compact.normalized.json
+    rename_members: data/derived/metamorphic/dacos/rename_members.normalized.json
+    rename_all: data/derived/metamorphic/dacos/rename_all.normalized.json
+    comment_claims_smell: data/derived/metamorphic/dacos/comment_claims_smell.normalized.json
+    comment_denies_smell: data/derived/metamorphic/dacos/comment_denies_smell.normalized.json
+    add_params: data/derived/metamorphic/dacos/add_params.normalized.json
+    duplicate_body: data/derived/metamorphic/dacos/duplicate_body.normalized.json
+    add_accessors: data/derived/metamorphic/dacos/add_accessors.normalized.json

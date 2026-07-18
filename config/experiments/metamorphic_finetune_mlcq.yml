@@ -1,0 +1,29 @@
+# Fine-tuned encoders scored on the metamorphic variants of MLCQ (one seed, kfold).
+#   CONFIG=config/experiments/metamorphic_finetune_mlcq.yml sbatch --array=0-1 scripts/slurm/code_finetune.sbatch
+#   CONFIG=config/experiments/metamorphic_finetune_mlcq.yml COLLECT=1 bash scripts/slurm/code_finetune.sbatch
+_include_yml: code_finetune.yml
+
+run:
+  name: metamorphic_finetune_mlcq
+
+code_finetune:
+  out_dir: artifacts/metamorphic/code_finetune
+  strategies: [kfold]
+  seeds: [42]
+  run_models: [unixcoder, modernbert_2048]
+  eval_variants:
+    blank_inflate: data/derived/metamorphic/mlcq/blank_inflate.normalized.json
+    blank_remove: data/derived/metamorphic/mlcq/blank_remove.normalized.json
+    reindent: data/derived/metamorphic/mlcq/reindent.normalized.json
+    neutral_comments: data/derived/metamorphic/mlcq/neutral_comments.normalized.json
+    rename_locals: data/derived/metamorphic/mlcq/rename_locals.normalized.json
+    shuffle_methods: data/derived/metamorphic/mlcq/shuffle_methods.normalized.json
+    strip_comments: data/derived/metamorphic/mlcq/strip_comments.normalized.json
+    compact: data/derived/metamorphic/mlcq/compact.normalized.json
+    rename_members: data/derived/metamorphic/mlcq/rename_members.normalized.json
+    rename_all: data/derived/metamorphic/mlcq/rename_all.normalized.json
+    comment_claims_smell: data/derived/metamorphic/mlcq/comment_claims_smell.normalized.json
+    comment_denies_smell: data/derived/metamorphic/mlcq/comment_denies_smell.normalized.json
+    add_params: data/derived/metamorphic/mlcq/add_params.normalized.json
+    duplicate_body: data/derived/metamorphic/mlcq/duplicate_body.normalized.json
+    add_accessors: data/derived/metamorphic/mlcq/add_accessors.normalized.json

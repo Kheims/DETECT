@@ -1,0 +1,288 @@
+# Metamorphic tests: source transformations of the MLCQ and DACOS snippets and the prediction changes they cause.
+# Run with --config config/experiments/metamorphic.yml, in order: scripts/analysis/make_metamorphic_variants.py,
+# scripts/cv/cv_tabular.py, scripts/analysis/analyze_metamorphic.py (tests: tests/test_metamorphic.py).
+
+# what a transform may do to the smell label, in figure order
+transform_classes:
+  presentation_invariant: [blank_inflate, blank_remove, reindent, neutral_comments, rename_locals, shuffle_methods]
+  presentation_ambiguous: [strip_comments, compact]
+  evidence_ablation: [rename_members, rename_all]
+  suggestion: [comment_claims_smell, comment_denies_smell]
+  construct_control: [add_params, duplicate_body, add_accessors]
+
+# seed of the per-sample random choices, combined with the json index
+seeds:
+  shuffle_methods: 0
+
+# same wrapping as scripts/data/extract_size_features.py (config/experiments/mlcq_analysis.yml)
+wrapper:
+  prefix: "public class SnippetWrapper {\n"
+  suffix: "\n}\n"
+
+transform_options:
+  # prefixes of the generated names (none may be a prefix of another)
+  names: {local: v, field: f, method: m, type: C, copy_local: d, param: p, accessor: extra}
+  # method names never renamed (besides constructors and @Override methods)
+  keep_method_names: [main, equals, hashCode, toString, clone, finalize]
+  reindent: {tab_spaces: 8, space_divisor: 2}
+  neutral_comments: {text: "// see issue tracker", every: 5}
+  # comment above the first top-level declaration, by snippet level (overridden per dataset)
+  suggestions:
+    comment_claims_smell:
+      method: "// TODO: this method is too long and too complex, refactor it"
+      class: "// TODO: this class is too large and does too much, refactor it"
+    comment_denies_smell:
+      method: "// Reviewed: this method is short, simple and clean, no refactoring needed"
+      class: "// Reviewed: this class is small, cohesive and clean, no refactoring needed"
+  add_params: {types: [int, String, boolean, double]}
+  add_accessors: {types: [int, String, boolean]}
+
+datasets:
+  mlcq:
+    base_json: data/MLCQCodeSmellSamples.normalized.json
+    label_order: [is_feature_envy, is_long_method, is_blob, is_data_class]
+    level: {source: csv, path: data/derived/mlcq_sample_meta.csv, key: json_index, column: level}
+    reference_size_csv: data/derived/size_features.csv
+    out_dir: data/derived/metamorphic/mlcq
+    transform_options:
+      suggestions:
+        comment_claims_smell:
+          method: "// TODO: this method is too long and has feature envy, refactor it"
+          class: "// TODO: this class is a god class or a data class, refactor it"
+        comment_denies_smell:
+          method: "// Reviewed: this method is short and uses the data of its own class, no refactoring needed"
+          class: "// Reviewed: this class is small and cohesive and has real behaviour, no refactoring needed"
+  dacos:
+    base_json: data/derived/dacos/dacos_methods.normalized.json
+    label_order: [is_complex_method, is_long_parameter_list]
+    level: {source: field, field: level}
+    reference_size_csv: data/derived/dacos/size_features.csv
+    out_dir: data/derived/metamorphic/dacos
+    transform_options:
+      suggestions:
+        comment_claims_smell:
+          method: "// TODO: this method is too complex and has too many parameters, refactor it"
+        comment_denies_smell:
+          method: "// Reviewed: this method is simple and has few parameters, no refactoring needed"
+
+variants:
+  workers: 8
+  chunksize: 16
+  only_datasets: null
+  only_transforms: null
+  size_sanity_csv: artifacts/analysis/metamorphic/size_sanity.csv
+  applicability_csv: artifacts/analysis/metamorphic/applicability.csv
+  # size columns a transform may change (any other change is printed as unexpected)
+  size_expectations:
+    blank_inflate: [loc_physical, chars]
+    blank_remove: [loc_physical, chars]
+    reindent: [chars]
+    neutral_comments: [loc_physical, loc_nonblank, chars, n_comments]
+    rename_locals: [chars, n_distinct_identifiers]
+    shuffle_methods: [n_params_first_method]
+    strip_comments: [loc_physical, loc_nonblank, chars, n_comments]
+    compact: [loc_physical, loc_nonblank, chars, n_comments]
+    rename_members: [chars, n_distinct_identifiers]
+    rename_all: [chars, n_distinct_identifiers]
+    comment_claims_smell: [loc_physical, loc_nonblank, chars, n_comments]
+    comment_denies_smell: [loc_physical, loc_nonblank, chars, n_comments]
+    add_params: [chars, tokens, ast_nodes, ast_depth, n_params_first_method, n_distinct_identifiers]
+    duplicate_body: [loc_physical, loc_nonblank, chars, tokens, ast_nodes, ast_depth, n_methods, n_fields,
+                     n_statements, max_block_nesting, n_distinct_identifiers, n_classes, n_comments]
+    add_accessors: [loc_physical, loc_nonblank, chars, tokens, ast_nodes, ast_depth, n_methods, n_fields,
+                    n_statements, max_block_nesting, n_distinct_identifiers]
+
+analysis:
+  out_dir: artifacts/analysis/metamorphic
+  figures_dir: artifacts/analysis/metamorphic/figures
+  strategies: [kfold]
+  threshold_steps: 101
+  # scores are clipped to [clip, 1 - clip] before the logit
+  clip: 1.0e-6
+  bootstrap: {n_boot: 1000, ci: 0.95, seed: 0}
+  # score shift figure: top k cells by flip rate with at least min_rows applied rows
+  strongest: {k: 8, min_rows: 20, classes: [presentation_invariant, presentation_ambiguous, evidence_ablation,
+                                            suggestion]}
+  class_labels:
+    presentation_invariant: "presentation, invariant"
+    presentation_ambiguous: "presentation, ambiguous"
+    evidence_ablation: "name evidence removed"
+    suggestion: "suggestion in a comment"
+    construct_control: "construct changed (controls)"
+  # looked up next to the base prediction files
+  variant_pattern: "predictions_variant_{transform}.jsonl"
+  # model: optional filter on the "model" field of the prediction rows
+  families:
+    gcn:
+      label: "GCN, AST graphs"
+      dataset: mlcq
+      predictions: ["artifacts/runs/*/predictions.jsonl"]
+      model: "gnn_gcn_type+token"
+    size_logreg:
+      label: "logistic regression, size features"
+      dataset: mlcq
+      predictions: [artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl]
+    modernbert:
+      label: "ModernBERT fine-tuned"
+      dataset: mlcq
+      predictions: ["artifacts/code_finetune/code_finetune/modernbert_2048/*/predictions.jsonl"]
+    qwen7b_zeroshot:
+      label: "Qwen2.5-Coder 7B, zero-shot"
+      dataset: mlcq
+      predictions: [artifacts/llm_judge_cv/qwen25_coder_7b_instruct/predictions.jsonl]
+    dacos_size_logreg:
+      label: "logistic regression, size features"
+      dataset: dacos
+      predictions: [artifacts/analysis/metamorphic/tabular_dacos/size_features__logreg/predictions.jsonl]
+    dacos_size_xgb:
+      label: "XGBoost, size features"
+      dataset: dacos
+      predictions: [artifacts/analysis/metamorphic/tabular_dacos/size_features__xgb/predictions.jsonl]
+    dacos_loc_logreg:
+      label: "logistic regression, non-blank LOC"
+      dataset: dacos
+      predictions: [artifacts/analysis/metamorphic/tabular_dacos/loc_only__logreg/predictions.jsonl]
+    dacos_params_logreg:
+      label: "logistic regression, parameter count"
+      dataset: dacos
+      predictions: [artifacts/analysis/metamorphic/tabular_dacos/params_only__logreg/predictions.jsonl]
+    dacos_modernbert:
+      label: "ModernBERT fine-tuned"
+      dataset: dacos
+      predictions: ["artifacts/dacos/code_finetune/*/modernbert_2048/*/predictions.jsonl"]
+    dacos_qwen7b_zeroshot:
+      label: "Qwen2.5-Coder 7B, zero-shot"
+      dataset: dacos
+      predictions: ["artifacts/dacos/llm_judge_cv/qwen25_coder_7b_instruct/predictions.jsonl"]
+    # cluster runs (scripts/slurm/llm_judge.sbatch and config/experiments/metamorphic_finetune_*.yml)
+    qwen27b_zeroshot:
+      label: "Qwen3.6-27B, zero-shot"
+      dataset: mlcq
+      predictions: [artifacts/llm_judge_cv/qwen36_27b_fp8/predictions.jsonl]
+    mm_unixcoder:
+      label: "UniXcoder fine-tuned"
+      dataset: mlcq
+      predictions: ["artifacts/metamorphic/code_finetune/metamorphic_finetune_mlcq/unixcoder/*/predictions.jsonl"]
+    mm_modernbert:
+      label: "ModernBERT fine-tuned (seed 42)"
+      dataset: mlcq
+      predictions: ["artifacts/metamorphic/code_finetune/metamorphic_finetune_mlcq/modernbert_2048/*/predictions.jsonl"]
+    dacos_qwen27b_zeroshot:
+      label: "Qwen3.6-27B, zero-shot"
+      dataset: dacos
+      predictions: [artifacts/dacos/llm_judge_cv/qwen36_27b_fp8/predictions.jsonl]
+    dacos_unixcoder:
+      label: "UniXcoder fine-tuned"
+      dataset: dacos
+      predictions: ["artifacts/dacos/code_finetune/metamorphic_finetune_dacos/unixcoder/*/predictions.jsonl"]
+
+# DACOS size baselines that also score every variant (scripts/cv/cv_tabular.py)
+tabular_cv:
+  folds: artifacts/folds/dacos_cv.json
+  input_json: data/derived/dacos/dacos_methods.normalized.json
+  label_order: [is_complex_method, is_long_parameter_list]
+  strategies: [kfold]
+  seeds: null
+  threshold_steps: 101
+  out_dir: artifacts/analysis/metamorphic/tabular_dacos
+  skip_existing: false
+  missing_features: error
+  feature_sets:
+    size_features: &size_features
+      source: csv
+      path: data/derived/dacos/size_features.csv
+      key: sample_idx
+      columns: &size_columns [loc_physical, loc_nonblank, chars, tokens, ast_nodes, ast_depth, n_methods, n_fields,
+                              n_statements, n_params_first_method, max_block_nesting, n_distinct_identifiers,
+                              n_classes, n_comments]
+      transform: signed_log1p
+    loc_only: &loc_only
+      source: csv
+      path: data/derived/dacos/size_features.csv
+      key: sample_idx
+      columns: [loc_nonblank]
+      transform: signed_log1p
+    params_only: &params_only
+      source: csv
+      path: data/derived/dacos/size_features.csv
+      key: sample_idx
+      columns: [n_params_first_method]
+      transform: signed_log1p
+  # {transform: {feature set: spec}}, the base spec with the variant CSV
+  variants:
+    blank_inflate:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/blank_inflate.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/blank_inflate.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/blank_inflate.size_features.csv}
+    blank_remove:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/blank_remove.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/blank_remove.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/blank_remove.size_features.csv}
+    reindent:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/reindent.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/reindent.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/reindent.size_features.csv}
+    neutral_comments:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/neutral_comments.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/neutral_comments.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/neutral_comments.size_features.csv}
+    rename_locals:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/rename_locals.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/rename_locals.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/rename_locals.size_features.csv}
+    shuffle_methods:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/shuffle_methods.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/shuffle_methods.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/shuffle_methods.size_features.csv}
+    strip_comments:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/strip_comments.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/strip_comments.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/strip_comments.size_features.csv}
+    compact:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/compact.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/compact.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/compact.size_features.csv}
+    rename_members:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/rename_members.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/rename_members.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/rename_members.size_features.csv}
+    rename_all:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/rename_all.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/rename_all.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/rename_all.size_features.csv}
+    comment_claims_smell:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/comment_claims_smell.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/comment_claims_smell.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/comment_claims_smell.size_features.csv}
+    comment_denies_smell:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/comment_denies_smell.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/comment_denies_smell.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/comment_denies_smell.size_features.csv}
+    add_params:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/add_params.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/add_params.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/add_params.size_features.csv}
+    duplicate_body:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/duplicate_body.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/duplicate_body.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/duplicate_body.size_features.csv}
+    add_accessors:
+      size_features: {<<: *size_features, path: data/derived/metamorphic/dacos/add_accessors.size_features.csv}
+      loc_only: {<<: *loc_only, path: data/derived/metamorphic/dacos/add_accessors.size_features.csv}
+      params_only: {<<: *params_only, path: data/derived/metamorphic/dacos/add_accessors.size_features.csv}
+  models:
+    logreg:
+      type: logistic_regression
+      C: 1.0
+      class_weight: balanced
+      max_iter: 2000
+    xgb:
+      type: xgboost
+      n_estimators: 200
+      max_depth: 5
+      lr: 0.1
+  runs:
+    - {features: [size_features], model: logreg}
+    - {features: [size_features], model: xgb}
+    - {features: [loc_only], model: logreg}
+    - {features: [params_only], model: logreg}

@@ -1,0 +1,79 @@
+# What each detector knows beyond snippet size (scripts/analysis/size_controlled.py).
+size_controlled:
+  strategy: kfold
+  # quantile strata of the size column inside the level of the smell
+  n_strata: 10
+  out: artifacts/analysis/size_controlled/size_controlled.json
+  datasets:
+    mlcq:
+      folds: artifacts/folds/mlcq_cv.json
+      input_json: data/MLCQCodeSmellSamples.normalized.json
+      size_csv: data/derived/size_features.csv
+      size_key: sample_idx
+      size_column: loc_nonblank
+      level_csv: data/derived/mlcq_sample_meta.csv
+      level_key: json_index
+      level_column: level
+      label_levels:
+        is_feature_envy: method
+        is_long_method: method
+        is_blob: class
+        is_data_class: class
+      # the size-only model that incremental_auc is measured against
+      reference: size_logreg
+      families:
+        size_logreg:
+          predictions: [artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl]
+        designite_xgb:
+          predictions: [artifacts/tabular_cv/tabular_cv/designite__xgb/predictions.jsonl]
+        gcn:
+          predictions: ["artifacts/runs/*/predictions.jsonl"]
+        probe_qwen15b_l14:
+          predictions: ["artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard*of4/predictions.jsonl"]
+        ft_unixcoder:
+          predictions: ["artifacts/code_finetune/code_finetune/unixcoder/*/predictions.jsonl"]
+        ft_modernbert_2048:
+          predictions: ["artifacts/code_finetune/code_finetune/modernbert_2048/*/predictions.jsonl"]
+        judge_qwen7b:
+          predictions: [artifacts/llm_judge_cv/qwen25_coder_7b_instruct/predictions.jsonl]
+        judge_qwen27b:
+          predictions: [artifacts/llm_judge_cv/qwen36_27b_fp8/predictions.jsonl]
+
+    # DACOS, strata = sampling stratum of DesigniteJava
+    dacos_stratum: &dacos
+      folds: artifacts/folds/dacos_cv.json
+      input_json: data/derived/dacos/dacos_methods.normalized.json
+      size_csv: data/derived/dacos/size_features.csv
+      size_key: sample_idx
+      size_column: loc_nonblank
+      strata_field: designite_smells_at_sampling
+      label_levels:
+        is_complex_method: method
+        is_long_parameter_list: method
+      reference: size_logreg
+      families:
+        size_logreg:
+          predictions: [artifacts/dacos/tabular_cv/size_features__logreg/predictions.jsonl]
+        designite_logreg:
+          predictions: [artifacts/dacos/tabular_cv/designite__logreg/predictions.jsonl]
+        designite_xgb:
+          predictions: [artifacts/dacos/tabular_cv/designite__xgb/predictions.jsonl]
+        cc_only_logreg:
+          predictions: [artifacts/dacos/tabular_cv/cc_only__logreg/predictions.jsonl]
+        pc_only_logreg:
+          predictions: [artifacts/dacos/tabular_cv/pc_only__logreg/predictions.jsonl]
+    # DACOS, strata = deciles of non-blank LOC, as for MLCQ
+    dacos_loc:
+      <<: *dacos
+      strata_field: null
+
+# scripts/labels/severity_tracking.py: score against reviewer severity among positives
+severity_tracking:
+  dataset: mlcq
+  out: artifacts/analysis/size_controlled/severity_tracking.json
+  # label -> suffix of the y_ and severity_ columns of the sample meta CSV
+  meta_short:
+    is_feature_envy: fe
+    is_long_method: lm
+    is_blob: blob
+    is_data_class: dc

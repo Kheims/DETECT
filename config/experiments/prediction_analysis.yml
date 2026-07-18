@@ -1,0 +1,19 @@
+# Cross-model analysis on the shared folds (scripts/analysis/analyze_predictions.py).
+analysis:
+  out_dir: artifacts/analysis/predictions
+  strategies: [kfold]
+  threshold_steps: 101
+  models:
+    gcn:
+      predictions: ["artifacts/runs/*/predictions.jsonl"]
+    size_logreg:
+      predictions: [artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl]
+    designite_xgb:
+      predictions: [artifacts/tabular_cv/tabular_cv/designite__xgb/predictions.jsonl]
+    qwen7b_zeroshot:
+      predictions: [artifacts/llm_judge_cv/qwen25_coder_7b_instruct/predictions.jsonl]
+  ensembles:
+    gcn+size: [gcn, size_logreg]
+    gcn+xgb: [gcn, designite_xgb]
+    gcn+qwen7b: [gcn, qwen7b_zeroshot]
+    gcn+size+xgb+qwen7b: [gcn, size_logreg, designite_xgb, qwen7b_zeroshot]

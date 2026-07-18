@@ -1,0 +1,120 @@
+# Data Class detection under structural matching of positives and negatives.
+#   python scripts/analysis/dc_structural_matching.py --config config/experiments/dc_matching.yml
+
+dc_matching:
+  label: is_data_class
+  level: class
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  folds: artifacts/folds/mlcq_cv.json
+  level_csv: data/derived/mlcq_sample_meta.csv
+  level_key: json_index
+  level_column: level
+  out_dir: artifacts/analysis/dc_matching
+
+  features:
+    out_csv: artifacts/analysis/dc_matching/structural_features.csv
+    wrapper_prefix: "public class SnippetWrapper {\n"
+    wrapper_suffix: "\n}\n"
+    workers: 8
+    # loc_nonblank must equal this file
+    size_csv: data/derived/size_features.csv
+    # a setter may end with `return this;`
+    fluent_setters: true
+
+  matching:
+    strategy: kfold
+    # matched on log1p of these columns
+    covariates: [loc_nonblank, n_fields, n_methods]
+    accessor_fraction_edges: [0.25, 0.5, 0.75]
+    primary: nn_k3_cal025
+    schemes:
+      # Mahalanobis nearest negatives within caliper_sd pooled standard deviations
+      nn_k3_cal025: {type: nearest, k: 3, caliper_sd: 0.25, label: "accessor bin, LOC, fields, methods"}
+      nn_k1_cal010: {type: nearest, k: 1, caliper_sd: 0.1}
+      nn_k3_cal050: {type: nearest, k: 3, caliper_sd: 0.5}
+      nn_rich_k3_cal050:
+        type: nearest
+        k: 3
+        caliper_sd: 0.5
+        label: "also accessors, constructors, statements, decisions, tokens, comments"
+        covariates: [loc_nonblank, n_fields, n_methods, n_accessors, n_constructors, mean_statements_non_accessor,
+                     n_decisions, size_tokens, size_n_comments]
+      # every negative of the same cell, raw units
+      exact_bins:
+        type: exact
+        edges:
+          loc_nonblank: [20, 40, 80, 160, 320, 640]
+          n_fields: [1, 3, 6, 11, 21]
+          n_methods: [1, 3, 6, 11, 21, 41]
+    bootstrap: 2000
+    bootstrap_seed: 0
+    references: [size_logreg, gbm_structure]
+    balance_columns: [loc_nonblank, n_fields, n_instance_fields, n_public_fields, n_methods, n_constructors,
+                      n_getters, n_setters, accessor_fraction, n_non_accessor_methods,
+                      mean_statements_non_accessor, max_nesting, n_decisions,
+                      size_chars, size_tokens, size_ast_nodes, size_n_statements, size_n_distinct_identifiers,
+                      size_n_comments, size_n_classes]
+
+  families:
+    size_logreg:
+      label: size logreg
+      predictions: [artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl]
+    designite_xgb:
+      label: Designite XGB
+      predictions: [artifacts/tabular_cv/tabular_cv/designite__xgb/predictions.jsonl]
+    gcn:
+      label: GCN
+      predictions: ["artifacts/runs/*/predictions.jsonl"]
+    probe_qwen15b_l14:
+      label: probe Qwen2.5-Coder-1.5B L14
+      predictions: ["artifacts/tabular_cv/code_probes/qwen25_coder_15b_l14__probe_shard*of4/predictions.jsonl"]
+    ft_unixcoder:
+      label: UniXcoder fine-tuned
+      predictions: ["artifacts/code_finetune/code_finetune/unixcoder/*/predictions.jsonl"]
+    ft_modernbert_2048:
+      label: ModernBERT-2048 fine-tuned
+      predictions: ["artifacts/code_finetune/code_finetune/modernbert_2048/*/predictions.jsonl"]
+    judge_qwen7b:
+      label: Qwen2.5-Coder-7B zero-shot
+      predictions: [artifacts/llm_judge_cv/qwen25_coder_7b_instruct/predictions.jsonl]
+    judge_qwen27b:
+      label: Qwen3.6-27B zero-shot
+      predictions: [artifacts/llm_judge_cv/qwen36_27b_fp8/predictions.jsonl]
+
+  gbm:
+    strategies: [kfold, group_kfold]
+    seeds: null
+    threshold_steps: 101
+    selection_metric: pr_auc   # pr_auc | roc_auc
+    # null uses every column of features.out_csv but the key
+    structural_columns: null
+    size_csv: data/derived/size_features.csv
+    size_columns: [loc_physical, chars, tokens, ast_nodes, ast_depth, n_statements, n_params_first_method,
+                   max_block_nesting, n_distinct_identifiers, n_classes, n_comments]
+    # best Data Class probe of code_probes.yml
+    embedding:
+      name: qwen25_coder_15b_l14
+      path: artifacts/embeddings/qwen25_coder_15b/emb_mean_layer14.npy
+      index: artifacts/embeddings/qwen25_coder_15b/index.json
+      pca_candidates: [16, 64]
+    common: {subsample: 0.8, colsample_bytree: 0.8, min_child_weight: 1, tree_method: hist, n_jobs: 4}
+    models:
+      d2: {max_depth: 2, n_estimators: 300, learning_rate: 0.05}
+      d3: {max_depth: 3, n_estimators: 300, learning_rate: 0.05}
+      d4: {max_depth: 4, n_estimators: 300, learning_rate: 0.05}
+    arms:
+      gbm_structure: {label: GBM structure, structure: true, embedding: false}
+      gbm_structure_emb: {label: GBM structure + embedding, structure: true, embedding: true}
+      gbm_emb: {label: GBM embedding, structure: false, embedding: true}
+    # [a, b] means a minus b
+    comparisons:
+      - [gbm_structure_emb, gbm_structure]
+      - [gbm_structure_emb, gbm_emb]
+    matched_arms: [gbm_structure, gbm_structure_emb]
+
+  figure:
+    dpi: 200
+    font_size: 9
+    name: dc_matching
+    # null draws the primary scheme alone
+    secondary_scheme: nn_rich_k3_cal050
