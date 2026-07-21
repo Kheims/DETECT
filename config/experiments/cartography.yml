@@ -1,0 +1,70 @@
+# Dataset cartography of MLCQ from the training dynamics of the fine-tuned code models.
+# Dynamics come from scripts/cv/finetune_code_model.py with dynamics: true.
+#   python scripts/labels/cartography.py --config config/experiments/cartography.yml
+run:
+  name: cartography
+
+cartography:
+  # items are <runs_root>/<model>/<strategy>_s<seed>_f<fold>/dynamics.npz
+  runs_root: artifacts/code_finetune/code_finetune
+  models: [codebert, graphcodebert, unixcoder, modernbert_1024, modernbert_2048]
+  strategy: kfold
+  # an item counts only once its record.json exists
+  require_record: true
+  min_items_per_model: 10
+  min_items_per_sample: 1
+  # a prediction at this threshold equal to the training label counts as correct
+  correct_threshold: 0.5
+
+  # epochs: all | to_best (epochs 1 to best_epoch of the item)
+  variants:
+    all_epochs: {epochs: all, label: "toutes les époques"}
+    to_best_epoch: {epochs: to_best, label: "époques 1 à la meilleure époque"}
+
+  inputs:
+    sample_meta_csv: data/derived/mlcq_sample_meta.csv
+    size_features_csv: data/derived/size_features.csv
+    rule_labels_json: data/derived/MLCQCodeSmellSamples.normalized.rule_default.json
+    # optional (null to skip)
+    zenodo_csv: data/mlcq_zenodo/MLCQCodeSmellSamples.csv
+
+  labels:
+    short_names: [fe, lm, blob, dc]
+    display_names: ["Feature Envy", "Long Method", "Blob", "Data Class"]
+    levels: {fe: method, lm: method, blob: class, dc: class}
+    severity_order: [none, minor, major, critical]
+
+  # mode quantile: values are quantiles of the group, mode fixed: absolute thresholds
+  regions:
+    mode: quantile
+    confidence_low: 0.33
+    confidence_high: 0.67
+    variability_high: 0.67
+
+  # Fisher exact test for binary attributes, Mann-Whitney U for continuous ones, Holm adjustment
+  tests:
+    ci_level: 0.95
+    positives:
+      regions: [hard]
+      binary: [minor_only, non_unanimous, rule_inconsistent, single_review, truncated]
+      continuous: [severity_rank, share_present_votes, n_reviews, num_tokens, loc_physical, ast_nodes]
+    negatives:
+      regions: [hard]
+      binary: [any_present_vote, non_unanimous, rule_inconsistent, single_review, truncated]
+      continuous: [share_present_votes, n_reviews, num_tokens, loc_physical, ast_nodes]
+
+  # audit lists (hard_cases_<smell>.csv)
+  export_variant: to_best_epoch
+  export_groups: [hard_positive, easy_negative]
+
+  out_dir: artifacts/analysis/cartography
+  figures_dir: artifacts/figures
+  figure_prefix: cartography_
+  figure_dpi: 200
+  attribute_labels:
+    minor_only: "mineure seulement"
+    any_present_vote: "au moins un avis présent"
+    non_unanimous: "avis non unanimes (2 avis ou plus)"
+    rule_inconsistent: "non conforme à la règle"
+    single_review: "un seul avis"
+    truncated: "tronqué"

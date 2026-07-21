@@ -1,0 +1,81 @@
+# MLCQ dataset analysis: size features, per-sample review metadata and descriptive statistics.
+#   python scripts/data/extract_size_features.py --config config/experiments/mlcq_analysis.yml
+#   python scripts/labels/analyze_mlcq.py --config config/experiments/mlcq_analysis.yml
+
+inputs:
+  normalized_json: data/MLCQCodeSmellSamples.normalized.json
+  raw_json: data/MLCQCodeSmellSamples.json
+  folds: artifacts/folds/mlcq_cv.json
+
+# label rule of scripts/NormalizeFromJson.py, re-checked against normalized_json
+labels:
+  fail_on_mismatch: false
+  aggregation: upper_median
+  severity_order: [none, minor, major, critical]
+  positive: [minor, major, critical]
+  # raw smell name per entry of LABEL_ORDER (mlcq_graphs/constants.py)
+  smell_names: ["feature envy", "long method", "blob", "data class"]
+  short_names: [fe, lm, blob, dc]
+  # smells reviewed for each sample level
+  levels:
+    method: ["feature envy", "long method"]
+    class: ["blob", "data class"]
+
+size_features:
+  out_csv: data/derived/size_features.csv
+  # same wrapping as scripts/build_ast_dot_from_normalized.py
+  wrapper_prefix: "public class SnippetWrapper {\n"
+  wrapper_suffix: "\n}\n"
+  workers: 8
+
+sample_meta:
+  out_csv: data/derived/mlcq_sample_meta.csv
+  check_out: data/derived/mlcq_label_rule_check.json
+
+analysis:
+  out_dir: artifacts/analysis/mlcq
+  figures_dir: artifacts/figures
+  figure_prefix: mlcq_
+  size_features_csv: data/derived/size_features.csv
+  sample_meta_csv: data/derived/mlcq_sample_meta.csv
+  # size features scored one by one with ROC-AUC
+  size_columns: [loc_physical, loc_nonblank, chars, tokens, ast_nodes, ast_depth, n_methods,
+                 n_fields, n_statements, n_params_first_method, max_block_nesting,
+                 n_distinct_identifiers, n_classes, n_comments]
+  top_k_repos: 5
+  repos_in_figure: 20
+  # bootstrap draws for the Krippendorff alpha confidence intervals
+  alpha_bootstrap: 1000
+  alpha_ci: 0.95
+  # dashed line of the agreement figure
+  alpha_reference: {value: 0.667, label: "lowest alpha for tentative conclusions"}
+  seed: 0
+  duplicates:
+    # tokens for near-duplicate detection (Jaccard on the token sets)
+    token_pattern: "[A-Za-z_$][A-Za-z0-9_$]*|[0-9][0-9A-Za-z_.]*|\\S"
+    jaccard_threshold: 0.9
+    # rows per block of the exact all-pairs sparse product
+    block_rows: 512
+    # folds checked for train/test duplicates
+    leakage_strategies: [kfold, group_kfold]
+  # drawn from the summary.json files of scripts/cv/summarize_cv.py (skipped when missing)
+  shortcut_figure:
+    name: shortcut_mcc
+    metrics: [feature_envy_mcc, long_method_mcc, blob_mcc, data_class_mcc, macro_mcc]
+    metric_names: [feature envy, long method, blob, data class, macro]
+    panels:
+      - title: "All samples"
+        summary: artifacts/analysis/mlcq/shortcut_vs_gnn/summary.json
+        groups:
+          - {label: "GCN, AST graphs", key: 'gnn {"training.architecture": "gcn", "training.loss": "focal", "training.split_strategy": "kfold"}'}
+          - {label: "XGBoost, Designite metrics", key: 'designite_xgb {"split_strategy": "kfold"}'}
+          - {label: "logistic regression, 14 size features", key: 'size_logreg {"split_strategy": "kfold"}'}
+          - {label: "logistic regression, physical LOC", key: 'loc_logreg {"split_strategy": "kfold"}'}
+          - {label: "logistic regression, level only", key: 'level_logreg {"split_strategy": "kfold"}'}
+      - title: "Each smell scored on its eligible samples"
+        summary: artifacts/analysis/mlcq/eligible_vs_designite/summary.json
+        groups:
+          - {label: "XGBoost, Designite metrics", key: 'designite_xgb_elig {"eligible_only": true, "split_strategy": "kfold"}'}
+          - {label: "logistic regression, 14 size features", key: 'size_logreg_elig {"eligible_only": true, "split_strategy": "kfold"}'}
+          - {label: "logistic regression, physical LOC", key: 'loc_logreg_elig {"eligible_only": true, "split_strategy": "kfold"}'}
+          - {label: "logistic regression, level only", key: 'level_logreg_elig {"eligible_only": true, "split_strategy": "kfold"}'}

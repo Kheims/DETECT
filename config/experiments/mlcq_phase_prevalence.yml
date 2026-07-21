@@ -1,0 +1,48 @@
+# MLCQ annotation prevalence before and after the selective cross-check, per smell at its level.
+#   python scripts/labels/mlcq_phase_prevalence.py --config config/experiments/mlcq_phase_prevalence.yml
+
+inputs:
+  normalized_json: data/MLCQCodeSmellSamples.normalized.json
+  sample_meta_csv: data/derived/mlcq_sample_meta.csv
+  # only used to check its order against the Zenodo ids
+  raw_json: data/MLCQCodeSmellSamples.json
+  zenodo_reviews_csv: data/mlcq_zenodo/MLCQCodeSmellSamples.csv
+  zenodo_separator: ";"
+
+labels:
+  severity_order: [none, minor, major, critical]
+  positive: [minor, major, critical]
+  # Zenodo smell name per entry of LABEL_ORDER
+  smell_names: ["feature envy", "long method", "blob", "data class"]
+  short_names: [fe, lm, blob, dc]
+  smell_level: {"feature envy": method, "long method": method, "blob": class, "data class": class}
+  type_level: {function: method, class: class}
+
+# first review of a unit: by review_timestamp, ties broken by id
+first_review_order: time
+
+# sampling phases of the MLCQ paper, inclusive dates of review_timestamp
+phases:
+  - {name: "1", start: "2019-03-27", end: "2019-04-02", paper_reviews: 2175,
+     description: "random, defective query (1 sample in 100 selectable)"}
+  - {name: "2", start: "2019-04-03", end: "2019-04-12", paper_reviews: 2648,
+     description: "uniform random among all classes or functions"}
+  - {name: "3", start: "2019-04-13", end: "2019-07-25", paper_reviews: 4801,
+     description: "random among samples longer than 4 lines"}
+  - {name: "4", start: "2019-07-26", end: "2019-09-13", paper_reviews: 5115,
+     description: "cross-check of samples rated above none with 1 review or 2 differing reviews"}
+uniform_phase: "2"
+crosscheck_phase: "4"
+
+length:
+  # end_line - start_line + 1
+  min_lines_long: 5
+  # pool sizes given in the MLCQ paper
+  paper_pool:
+    class: {all: 678278, long: 552750}
+    method: {all: 5101141, long: 2297722}
+
+ci_level: 0.95
+
+output:
+  out_dir: artifacts/analysis/mlcq_prevalence

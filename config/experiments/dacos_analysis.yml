@@ -1,0 +1,118 @@
+# DACOS label analysis: agreement, sampling design, label drivers and annotation-order effects.
+#   python scripts/labels/analyze_dacos.py --config config/experiments/dacos_analysis.yml
+#   python scripts/labels/analyze_dacos.py --self-test
+
+inputs:
+  methods_json: data/derived/dacos/dacos_methods.normalized.json
+  classes_json: data/derived/dacos/dacos_classes.normalized.json
+  folds: artifacts/folds/dacos_cv.json
+  # MySQL dump of the Tagman database (Zenodo 7570428)
+  sql_dump: ~/Repositories/personal/Thesis/smells_agents_detection/data/raw/dacos/DACOSMain.sql
+  mlcq_sample_meta_csv: data/derived/mlcq_sample_meta.csv
+  # optional, from scripts/labels/analyze_reviewers.py
+  mlcq_reviewers_summary: artifacts/analysis/reviewers/summary.json
+
+out:
+  dir: artifacts/analysis/dacos
+  json: dacos_analysis.json
+  features_csv: method_features.csv
+  figures_dir: artifacts/analysis/dacos/figures
+  figure_prefix: dacos_
+  dpi: 300
+
+# column order of y in the method JSON, never reorder
+label_order: [is_complex_method, is_long_parameter_list]
+
+# code: sampling code in sample.smells, metric: sampling metric, flag: annotation column
+method_smells:
+  - {key: is_complex_method, name: complex method, short: cm, code: "1", metric: cc, flag: iscm}
+  - {key: is_long_parameter_list, name: long parameter list, short: lpl, code: "2", metric: pc, flag: islp}
+class_smell: {name: multifaceted abstraction, short: ma, code: "3", metric: lcom, flag: isma}
+
+sampling:
+  # windows of the Tagman import code (util/Constants.java)
+  code_rule:
+    "1": {metric: cc, low: 4, low_inclusive: false, high: 14, high_inclusive: true}
+    "2": {metric: pc, low: 3, low_inclusive: false, high: 12, high_inclusive: false}
+    "3": {metric: lcom, low: 0.4, low_inclusive: false, high: 1.6, high_inclusive: false}
+  # Table I of the DACOS paper
+  paper_rule:
+    "1": {metric: cc, low: 4, low_inclusive: true, high: 7, high_inclusive: true}
+    "2": {metric: pc, low: 3, low_inclusive: true, high: 6, high_inclusive: true}
+    "3": {metric: lcom, low: 0.4, low_inclusive: true, high: 0.8, high_inclusive: true}
+  # Table II of the paper (DACOS rows)
+  paper_counts:
+    complex method: {annotations: 4349, samples: 2197}
+    long parameter list: {annotations: 3221, samples: 1634}
+    multifaceted abstraction: {annotations: 2697, samples: 1361}
+    total: {annotations: 10267, samples: 5192}
+  quotes:
+    - location: "arXiv 2303.08729v1, p. 3, section II.E.1 (Phase-1)"
+      text: "We compute the lowest metric value (tl ) where the smell is identified, for each smell individually, to obtain the threshold at the lower side. Similarly, we extract the highest metric value (th ) where the smell is not identified. Then, we compute the standard deviation (sd) of the metric value for the samples where the smell is identified. Finally, we obtain the low threshold using max(ml , tl - sd) and high threshold using min(mh , th + sd) for subjective snippet identification."
+    - location: "arXiv 2303.08729v1, p. 3, Table I"
+      text: "Complex method, Cyclomatic complexity, 4-7; Long parameter list, Parameter count, 3-6; Multifaceted abstraction, Lack of cohesion among methods (LCOM), 0.4-0.8"
+    - location: "arXiv 2303.08729v1, p. 3, section II.E.2 (Phase-2)"
+      text: "TAGMAN showed snippets that have metric values falling between the low and high thresholds (inclusive). We configured TAGMAN to get two annotations for each sample to improve the reliability of the annotations."
+  # values printed per metric in the distribution tables
+  metrics: [cc, pc, loc]
+  quantiles: [0.0, 0.25, 0.5, 0.75, 1.0]
+
+# check box labels of the Tagman UI per sampling code
+ui_labels: {"1": Complex Method, "2": Long Method, "3": MultiFaceted Abstraction}
+
+mlcq:
+  short_names: [fe, lm, blob, dc]
+  smell_names: [feature envy, long method, blob, data class]
+  severity_order: [none, minor, major, critical]
+  positive: [minor, major, critical]
+
+agreement:
+  bootstrap: 1000
+  ci: 0.95
+  alpha_reference: {value: 0.667, label: "lowest alpha for tentative conclusions"}
+  # share of inconsistent rows above which an order bin is affected
+  affected_bin_share: 0.5
+
+features:
+  wrapper_prefix: "public class SnippetWrapper {\n"
+  wrapper_suffix: "\n}\n"
+  designite: [cc, pc, loc]
+  tree_sitter: [ts_methods, ts_loc_nonblank, ts_statements, ts_max_nesting, ts_loops, ts_if, ts_else, ts_case, ts_catch,
+                ts_ternary, ts_bool_ops, ts_returns, ts_params, ts_param_distinct_types, ts_param_primitive,
+                ts_param_boolean, ts_param_string, ts_varargs, ts_param_generic]
+
+explain:
+  ci: 0.95
+  # metric values with fewer samples are drawn faded
+  min_samples_per_value: 10
+  figure_max_value: {cc: 20, pc: 12}
+  cv_strategy: kfold
+  cv_seeds: [42, 43, 44, 45, 46]
+  # C of the L1 logistic regression, chosen on validation ROC-AUC
+  c_grid: [0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0]
+  max_iter: 5000
+  # metric is the sampling metric of the smell
+  feature_sets:
+    metric: [metric]
+    designite: [designite]
+    tree_sitter: [tree_sitter]
+    code_all: [designite, tree_sitter]
+    project: [project]
+    period: [period]
+    code_all_project_period: [designite, tree_sitter, project, period]
+  # feature set whose coefficients are fit on all labelled samples
+  coefficients_of: code_all
+
+batches:
+  # equal-count bins of the annotation rows sorted by id
+  order_bins: 20
+  # near-unpenalized fits for the likelihood-ratio tests
+  lrt_c: 1.0e+6
+  lrt_max_iter: 10000
+  run_permutations: 1000
+  run_null_quantile: 0.95
+  chi_square_block_permutations: 10000
+  # bins with a positive rate in this range count as mixed
+  mixed_bin_rate: [0.1, 0.9]
+
+seed: 0

@@ -1,0 +1,34 @@
+# Blind re-annotation of MLCQ samples picked by model difficulty.
+# scripts/labels/select_audit_cases.py, then the annotation workflow, then scripts/labels/analyze_audit.py
+audit:
+  seed: 20261003
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  sample_meta: data/derived/mlcq_sample_meta.csv
+  difficulty_csv: artifacts/analysis/predictions/sample_difficulty.csv
+  hard_positive_error: 0.75
+  hard_negative_error: 0.5
+  easy_positive_error: 0.25
+  easy_negative_error: 0.0
+  per_group: 15
+  max_lines: 250
+  truncation_marker: "// ... [{omitted_lines} more lines not shown]"
+  out_dir: artifacts/analysis/audit
+  smells:
+    feature_envy: {level: method}
+    long_method: {level: method}
+    data_class: {level: class}
+
+# scripts/labels/analyze_audit.py
+audit_analysis:
+  # kept outside the audit directory so that annotators never see it
+  key: artifacts/analysis/audit_key/key.json
+  judgments: artifacts/analysis/audit/judgments.json
+  sample_meta: data/derived/mlcq_sample_meta.csv
+  llm_scores: artifacts/llm_judge/qwen36_27b_fp8/scores.jsonl
+  out_dir: artifacts/analysis/audit
+  figure:
+    dir: artifacts/figures
+    name: audit_panel_present
+    ylabel: "part jugée présente par le panel"
+    group_labels: {easy_pos: "positif facile", hard_pos: "positif difficile", hard_neg: "négatif difficile", easy_neg: "négatif facile"}
+    smell_titles: {feature_envy: "Feature Envy", long_method: "Long Method", data_class: "Data Class"}

@@ -1,0 +1,102 @@
+# Reviewer and sampling-phase effects on the MLCQ labels, on the original Zenodo release.
+#   python scripts/labels/analyze_reviewers.py --config config/experiments/mlcq_reviewers.yml
+
+inputs:
+  normalized_json: data/MLCQCodeSmellSamples.normalized.json
+  # labels re-derived with the documented rule
+  rule_default_json: data/derived/MLCQCodeSmellSamples.normalized.rule_default.json
+  zenodo_reviews_csv: data/mlcq_zenodo/MLCQCodeSmellSamples.csv
+  zenodo_separator: ";"
+  survey_csv: data/mlcq_zenodo/MLCQCodeSmellDevelopersSurvey.csv
+  folds: artifacts/folds/mlcq_cv.json
+
+labels:
+  severity_order: [none, minor, major, critical]
+  positive: [minor, major, critical]
+  # Zenodo smell name per entry of LABEL_ORDER
+  smell_names: ["feature envy", "long method", "blob", "data class"]
+  short_names: [fe, lm, blob, dc]
+  display_names: ["Feature Envy", "Long Method", "Blob", "Data Class"]
+  smell_type: {"feature envy": function, "long method": function, "blob": class, "data class": class}
+  type_level: {function: method, class: class}
+  # stored counts of json_index 0 to 174 are inflated
+  stored_votes_checked_from_index: 175
+
+# sampling phases of the MLCQ paper, inclusive dates of review_timestamp
+phases:
+  - {name: "1", start: "2019-03-27", end: "2019-04-02", paper_reviews: 2175,
+     description: "random, defective query (1 sample in 100 selectable)"}
+  - {name: "2", start: "2019-04-03", end: "2019-04-12", paper_reviews: 2648,
+     description: "uniform random"}
+  - {name: "3", start: "2019-04-13", end: "2019-07-25", paper_reviews: 4801,
+     description: "random among samples longer than 4 lines"}
+  - {name: "4", start: "2019-07-26", end: "2019-09-13", paper_reviews: 5115,
+     description: "cross-check of samples rated above none with 1 review or 2 differing reviews"}
+crosscheck_phase: "4"
+
+reviewers:
+  ci_level: 0.95
+  top_k_share: 5
+  # minimum reviews of the smell per reviewer in the tests
+  min_reviews_test: 30
+  permutations: 5000
+  seed: 0
+  # review ranks from this value on are pooled
+  max_rank_category: 3
+  min_reviews_figure: 10
+  # minimum shared (sample, smell) units per reviewer pair
+  min_overlap: 30
+  pair_bootstrap: 1000
+  heatmap_reviewers: 8
+  min_confirmation_figure: 20
+
+selection:
+  # numbers of reviews above this value are pooled in the last bin
+  max_reviews_bin: 4
+
+model_errors:
+  strategy: kfold
+  threshold_steps: 101
+  max_reviews_bin: 3
+  label_source: stored
+  # smaller single-review groups are pooled in "other reviewers"
+  min_group_units: 20
+  figure_min_group_units: {fn: 20, fp: 60}
+  models:
+    - {name: designite__xgb, label: "XGBoost, métriques Designite",
+       paths: [artifacts/tabular_cv/tabular_cv/designite__xgb/predictions.jsonl]}
+    - {name: designite+relational_l0+level__xgb, label: "XGBoost, Designite + relations + niveau",
+       paths: [artifacts/tabular_cv/tabular_cv/designite+relational_l0+level__xgb/predictions.jsonl]}
+    - {name: designite__logreg, label: "régression logistique, Designite",
+       paths: [artifacts/tabular_cv/tabular_cv/designite__logreg/predictions.jsonl]}
+    - {name: size_features__xgb, label: "XGBoost, 14 mesures de taille",
+       paths: [artifacts/analysis/mlcq/shortcut_cv/size_features__xgb/predictions.jsonl]}
+    - {name: loc_only__logreg, label: "régression logistique, LOC seules",
+       paths: [artifacts/analysis/mlcq/shortcut_cv/loc_only__logreg/predictions.jsonl]}
+    - {name: gnn_gcn, label: "GCN, graphes d'AST",
+       records: artifacts/reports/gnn_cv/records.json, run_dir_field: run_dir,
+       local_root: artifacts/analysis/reviewers/inputs/gnn_runs, file_name: predictions.jsonl}
+    - {name: code_finetune, label: "modèle de code affiné", optional: true,
+       paths: ["artifacts/analysis/reviewers/inputs/code_finetune/*/kfold_s*_f*/predictions.jsonl"]}
+  figure_models: [designite__xgb, size_features__xgb, loc_only__logreg, gnn_gcn]
+
+survey:
+  reviewer_id_column: reviewer_id
+  # self-reported durations written like 1Y2M, 6M or 5Y
+  experience_columns:
+    programming_years: "How long professional experience in programming do you have?"
+    java_years: "How long professional experience in programming in Java do you have?"
+    coding_years: "How long do you code? (Please include also coding for fun)"
+    software_dev_years: "How long professional experience in software development do you have? (Please include programming, testing, administration, management etc.)"
+  categorical_columns:
+    education: "Which is the highest level of formal education that you graduated?"
+    smell_familiarity: "Are you familiar with the concept of code smells?"
+    code_review_experience: "How long have you been conducting regular code reviews for your peers?"
+  min_reviews_correlation: 30
+  min_reviewers_correlation: 4
+  permutations: 10000
+
+output:
+  out_dir: artifacts/analysis/reviewers
+  figures_dir: artifacts/figures
+  figure_prefix: reviewers_
