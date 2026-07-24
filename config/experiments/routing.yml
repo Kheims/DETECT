@@ -1,0 +1,93 @@
+# Routing a share of the test samples from a cheap model to the zero-shot LLM judge.
+#   python scripts/llm/route_to_llm.py --config config/experiments/routing.yml
+#   python scripts/llm/route_to_llm.py --config ... --routing.policies.random.repeats=5
+routing:
+  out_dir: artifacts/analysis/routing
+  folds: artifacts/folds/mlcq_cv.json
+  label_order: [is_feature_envy, is_long_method, is_blob, is_data_class]
+  strategies: [kfold]
+  threshold_steps: 101
+  # share of the test samples of the smell's level sent to the LLM
+  budgets: [0.0, 0.05, 0.1, 0.25, 0.5, 1.0]
+  # each smell is evaluated on the samples of its level only
+  smell_levels:
+    is_feature_envy: method
+    is_long_method: method
+    is_blob: class
+    is_data_class: class
+  level: {path: data/derived/mlcq_sample_meta.csv, key: json_index, column: level}
+
+  # prediction files given as `predictions` (paths or globs) or `run_records`
+  cheap_models:
+    size_logreg:
+      label: size logistic regression
+      model: size_features__logreg
+      predictions: [artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl]
+      cost_key: size_logreg
+    gcn:
+      label: GCN
+      model: gnn_gcn_type+token
+      run_records: {path: artifacts/reports/gnn_cv/records.json, runs_dir: artifacts/runs, file: predictions.jsonl}
+      cost_key: gcn_ast
+  llm:
+    label: Qwen3.6-27B zero-shot
+    model: qwen36_27b_fp8
+    predictions: [artifacts/llm_judge_cv/qwen36_27b_fp8/predictions.jsonl]
+    cost_key: qwen36_27b_zeroshot
+    # one prompt per smell of the level
+    prompts_per_sample: 2
+  costs: artifacts/analysis/costs/costs.json
+
+  # llm: LLM probability, mean: mean of the cheap and LLM probabilities
+  routed_scores: [llm, mean]
+
+  policies:
+    random: {kind: random, repeats: 20, label: random}
+    uncertainty: {kind: uncertainty, label: uncertainty}
+    learned_error: {kind: learned, target: cheap_error, label: "learned (cheap error)"}
+    learned_fixes: {kind: learned, target: routed_fixes, label: "learned (routed score fixes)"}
+    oracle: {kind: oracle, label: "oracle (upper bound)"}
+  seed: 0
+
+  # paired contrasts: each policy at each budget minus each reference
+  contrasts:
+    policies: [uncertainty, learned_error, learned_fixes]
+    budgets: [0.25]
+    against: [cheap_alone, always_on_mean]
+
+  # logistic router of the learned policies, C chosen by inner CV on validation
+  learned:
+    size_features: {path: data/derived/size_features.csv, key: sample_idx, exclude_columns: [has_parse_error]}
+    C_grid: [0.01, 0.1, 1.0, 10.0]
+    C_default: 0.1
+    inner_folds: 3
+    class_weight: balanced
+    max_iter: 2000
+
+  figure:
+    name: routing_mcc
+    formats: [pdf, png]
+    dpi: 200
+    font_size: 8
+    # inches per panel (width, height)
+    panel_size: [2.3, 2.2]
+    # x axis: symmetric log scale, linear below linthresh
+    linthresh: 0.05
+    linscale: 0.5
+    xlim: [-0.003, 1.05]
+    colors:
+      random: "#CC79A7"
+      uncertainty: "#0072B2"
+      learned_error: "#E69F00"
+      learned_fixes: "#009E73"
+      oracle: "#D55E00"
+    markers:
+      random: "o"
+      uncertainty: "s"
+      learned_error: "^"
+      learned_fixes: "v"
+      oracle: "D"
+    dashed: [oracle]
+    routed_labels:
+      llm: LLM score
+      mean: mean score

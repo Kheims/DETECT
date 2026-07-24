@@ -1,0 +1,98 @@
+# Zero-shot LLM smell judges, one yes/no question per applicable smell.
+# scripts/llm/llm_judge.py, scripts/llm/eval_llm_judge.py
+run:
+  name: llm_judge
+
+llm_judge:
+  folds: artifacts/folds/mlcq_cv.json
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  # raw review rows, used to get the level (method or class) of each sample
+  raw_json: data/MLCQCodeSmellSamples.json
+  prompts: prompts/smell_judge.yml
+  out_root: artifacts/llm_judge
+
+  # smell -> raw MLCQ smell name (column order is LABEL_ORDER, never reorder)
+  raw_smell_names:
+    is_feature_envy: feature envy
+    is_long_method: long method
+    is_blob: blob
+    is_data_class: data class
+
+  # judge to run when --judge is not given
+  default_judge: qwen25_coder_7b_instruct
+  # prompts per vLLM generate call (resume granularity)
+  chunk_size: 1024
+  # smoke subset (n_per_level null = every json_index of the folds meta)
+  subset:
+    n_per_level: null
+    min_positives_per_smell: 4
+    seed: 0
+  # suffix of the output directory name (<judge><tag>)
+  tag: ""
+
+  answer:
+    # first-token strings counted as yes / no
+    yes_variants: ["yes", "Yes", "YES", " yes", " Yes", " YES"]
+    no_variants: ["no", "No", "NO", " no", " No", " NO"]
+
+  sampling:
+    max_tokens: 1
+    temperature: 0.0
+    # top-K first-token logprobs returned by vLLM (engine max_logprobs >= K)
+    logprobs: 20
+
+  judges:
+    qwen36_27b_fp8:
+      # Hugging Face id, resolved offline through HF_HOME
+      hf_id: Qwen/Qwen3.6-27B-FP8
+      # snippet tokens kept before truncation (judge tokenizer)
+      max_code_tokens: 7000
+      chat_template_kwargs:
+        enable_thinking: false
+      engine:
+        max_model_len: 8192
+        gpu_memory_utilization: 0.92
+        tensor_parallel_size: 1
+        dtype: auto
+        enforce_eager: false
+        max_logprobs: 20
+        max_num_seqs: 64
+        seed: 0
+        # text-only use of a multimodal checkpoint
+        language_model_only: true
+    qwen25_coder_7b_instruct:
+      model_path: data/models/Qwen__Qwen2.5-Coder-7B-Instruct
+      max_code_tokens: 7000
+      chat_template_kwargs:
+        enable_thinking: false
+      engine:
+        max_model_len: 8192
+        gpu_memory_utilization: 0.9
+        tensor_parallel_size: 1
+        dtype: bfloat16
+        enforce_eager: false
+        max_logprobs: 20
+        max_num_seqs: 128
+        seed: 0
+
+  eval:
+    strategies: [kfold, group_kfold]
+    seeds: null
+    # fold ids to evaluate (null = all)
+    folds_subset: null
+    threshold_steps: 101
+    out_dir: artifacts/llm_judge_cv
+    # score when both yes and no tokens are outside the top-K logprobs
+    nan_fill: 0.0
+    # error: every fold index must be scored, drop: evaluate scored indices only
+    missing: error
+    # scores become sigmoid(logit(score) / T) before threshold tuning (1.0 = raw)
+    score_temperatures: [1.0, 4.0]
+    # suffix of the evaluation directory name (<judge><tag><name_suffix>[_T<T>])
+    name_suffix: ""
+    figure:
+      enabled: true
+      bins: 24
+      log_odds_clip: 12.0
+      size: [12, 3]
+      colors: {negative: "#2a78d6", positive: "#eb6834"}

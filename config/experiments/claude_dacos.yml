@@ -1,0 +1,63 @@
+# Claude Code judge on DACOS method snippets, inside the sampling strata.
+# scripts/llm/claude_agent_judge.py, scripts/llm/eval_claude_agent.py
+claude_agent:
+  input_json: data/derived/dacos/dacos_methods.normalized.json
+  # no meta CSV and no repository snapshots for DACOS
+  sample_meta: null
+  snapshots: null
+  stratum_field: designite_smells_at_sampling
+  prompts: prompts/smell_judge.yml
+  out_dir: artifacts/claude_agent/sonnet5_dacos
+  model: claude-sonnet-5
+  workers: 4
+  retries: 3
+  timeout_seconds: 900
+  quota_cooldown_seconds: 600
+  neutral_workdir: /private/tmp/claude_agent_neutral
+  # label -> position in y
+  label_columns:
+    is_complex_method: 0
+    is_long_parameter_list: 1
+  subset:
+    from_file: null
+    smells: [is_complex_method, is_long_parameter_list]
+    n_pos: 100
+    n_neg: 100
+    seed: 0
+    # sampling strata (values of stratum_field) allowed per smell
+    strata:
+      is_complex_method: [["1"]]
+      is_long_parameter_list: [["2"]]
+  conditions:
+    snippet:
+      tools: ""
+      restricted: false
+      cwd: neutral
+      template: |-
+        You are an experienced Java developer doing a code review. You will be shown one Java {kind} and asked whether it has one specific code smell. Judge only from the code shown.
+
+        Code smell: {smell}.
+        Definition: {definition}
+
+        Code:
+        ```java
+        {code}
+        ```
+
+        Does this {kind} have the code smell {smell}? Think it through briefly. End your reply with one line of JSON exactly like {{"smell_probability": 37, "answer": "no"}}, where smell_probability is your probability (0 to 100) that the smell is present.
+
+claude_agent_eval:
+  baseline: snippet
+  bootstrap: 2000
+  bootstrap_seed: 0
+  references:
+    size_logreg_seed42:
+      kind: oof_predictions
+      glob: artifacts/dacos/tabular_cv/size_features__logreg/predictions.jsonl
+      strategy: kfold
+      seed: 42
+    designite_xgb_seed42:
+      kind: oof_predictions
+      glob: artifacts/dacos/tabular_cv/designite__xgb/predictions.jsonl
+      strategy: kfold
+      seed: 42

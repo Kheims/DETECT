@@ -1,0 +1,273 @@
+# Prompts of the LLM context study (scripts/llm/llm_context_judge.py).
+#
+# The smell definitions are those of prompts/smell_judge.yml (Refactoring by
+# Fowler, 1999 and 2018 editions, plus the descriptions given to the MLCQ
+# reviewers by Madeyski and Lewowski, 2020). Every condition asks the same
+# final yes/no question; the conditions differ only in the context sections
+# placed before the code fragment (C0 has none) or, for the agent condition
+# C4, in the tool calls made before the final question.
+#
+# FACTS_ONLY shows the static facts without the code; PAD shows filler lines
+# of the length of the C3 context; REPLAY shows the outputs of the tools that
+# the C4 agent called for the same query, without the agent's own text.
+#
+# Placeholders: {smell_name}, {definition}, {unit} (Method or Class),
+# {unit_lower} (method or class), {question}, {code} (possibly truncated, the
+# same in every condition), {truncation_note} (empty or truncation.note),
+# {context} (empty, the rendered sections or the PAD filler block),
+# {max_tool_calls} (C4).
+
+system: |-
+  You are an experienced Java developer doing a code review. You will be shown
+  one Java code fragment, sometimes with context extracted from the repository
+  it comes from, and asked whether the fragment has one specific code smell.
+  Answer with a single word: yes or no.
+
+truncation:
+  # appended as the last line of a truncated snippet
+  marker: "// ... [snippet truncated: {omitted_lines} more lines not shown]"
+  # inserted through {truncation_note} when the snippet was cut
+  note: "The fragment is long and was cut; the last line marks where it was truncated.\n\n"
+  # appended as the last line of a truncated context section or tool output
+  context_marker: "... [{omitted_lines} more lines not shown]"
+
+smells:
+  is_feature_envy:
+    level: method
+    name: feature envy
+    unit: Method
+    question: Does this method have feature envy?
+    definition: |-
+      a method has feature envy when it is more interested in the
+      data of other classes than in the data of its own class. Most of its work
+      reads fields of, or calls getters and other methods on, objects of one or
+      a few other classes, while it uses few members of the class it belongs
+      to. Such a method would fit better in the class whose data it uses.
+  is_long_method:
+    level: method
+    name: long method
+    unit: Method
+    question: Is this a long method?
+    definition: |-
+      a method is a long method when it is too long and does too
+      much to be understood easily. Typical signs are many statements, several
+      distinct steps that could each be extracted into a separate method with
+      its own name, many local variables and parameters, deep nesting, and long
+      conditional or loop bodies.
+  is_blob:
+    level: class
+    name: blob (also called god class or large class)
+    unit: Class
+    question: Is this class a blob?
+    definition: |-
+      a class is a blob when it has grown too large and centralises
+      too much of the behaviour of the system. Typical signs are many fields
+      and methods, several unrelated responsibilities, low cohesion between its
+      methods, high complexity, and heavy use of data from other classes that
+      it controls.
+  is_data_class:
+    level: class
+    name: data class
+    unit: Class
+    question: Is this class a data class?
+    definition: |-
+      a class is a data class when it mainly holds data and has
+      almost no behaviour of its own. Typical signs are fields exposed through
+      getters and setters (or public fields), and methods that only store or
+      return values, so that the logic working on this data lives in other
+      classes.
+
+# user message of C0 to C3 and SHUF
+user_template: |-
+  Code smell: {smell_name}.
+  Definition: {definition}
+
+  {context}{truncation_note}{unit}:
+  ```java
+  {code}
+  ```
+
+  {question} Answer yes or no.
+
+# user message of FACTS_ONLY: the static facts of C2, the code is not shown
+facts_only_template: |-
+  Code smell: {smell_name}.
+  Definition: {definition}
+
+  The source code of the {unit_lower} is not shown. {context}Judge from these facts only.
+  {question} Answer yes or no.
+
+# PAD: filler block in place of the context, of the same token length as the
+# C3 context of the sample (title line, then copies of `line`)
+pad:
+  title: Filler lines (they carry no information about the code)
+  line: "// filler line without information"
+
+context:
+  # placed before the section texts when at least one section is shown
+  intro: "Context extracted automatically from the same repository, at the same commit:\n\n"
+  # a section is rendered as "<title>:\n<text>\n\n" (the text in a java code
+  # block when code is true); as "<title>: <empty>.\n\n" when the part was
+  # built but holds nothing; as "<title>: <unavailable>.\n\n" when it could
+  # not be built (no snapshot, declaration not found)
+  unavailable: not available for this sample
+  sections:
+    skeleton:
+      enclosing_type: {title: "Class that declares the method (fields and member signatures, bodies omitted)", code: true}
+      outer_type: {title: "Outer class that declares this class (fields and member signatures, bodies omitted)", code: true}
+      file_context: {title: "File that declares this class (package, imports and other top-level types)", code: true}
+    facts:
+      method: {title: Static facts about the method body, code: false}
+      class: {title: Static facts about the class, code: false}
+    referenced:
+      method:
+        title: Repository types used by the method (fields and member signatures, bodies omitted)
+        code: true
+        empty: no type used by the method was found in the repository
+    usages:
+      class:
+        title: Lines of other repository files that mention the class
+        code: false
+        empty: no other file of the repository mentions the class
+        # first line of the text
+        head: "{n_lines} lines in {n_files} files (import lines skipped), the first {shown}:"
+    replay:
+      any:
+        title: Outputs of repository tools called for this question, in call order
+        code: false
+        empty: no tool output was retrieved
+        # line above each output: call number, tool and arguments
+        item: "[{k}] {name}({arguments}):"
+
+# sections shown by each condition, in prompt order; extra = referenced types
+# for method samples and usage lines for class samples; skeleton_shuffled =
+# the skeleton of the SHUF donor; replay = the C4 tool outputs of the query.
+# PAD has no section: its filler block (pad above) replaces the context.
+conditions:
+  C0: []
+  C1: [skeleton]
+  C2: [facts]
+  C3: [skeleton, facts, extra]
+  SHUF: [skeleton_shuffled]
+  FACTS_ONLY: [facts]
+  PAD: []
+  REPLAY: [replay]
+
+# REASON: the C4 conversation without tools. The model writes its reasoning
+# about the fragment, then gets the final question of agent (final_question)
+# and its first answer token is scored as in C4.
+reason:
+  system: |-
+    You are an experienced Java developer doing a code review. You will be shown
+    one Java code fragment and asked whether it has one specific code smell.
+  user_template: |-
+    Code smell: {smell_name}.
+    Definition: {definition}
+
+    {truncation_note}{unit}:
+    ```java
+    {code}
+    ```
+
+    {question} First explain your reasoning about this code in a few sentences.
+    Then answer with a single word: yes or no.
+
+agent:
+  system: |-
+    You are an experienced Java developer doing a code review. You will be shown
+    one Java code fragment and asked whether it has one specific code smell.
+    Before answering, you can call tools to inspect the repository the fragment
+    comes from, at the same commit.
+  user_template: |-
+    Code smell: {smell_name}.
+    Definition: {definition}
+
+    {truncation_note}{unit}:
+    ```java
+    {code}
+    ```
+
+    {question} You may first call the tools to inspect the repository (at most
+    {max_tool_calls} calls in total). When you have enough information, answer
+    with a single word: yes or no.
+  # appended as a user message after the last turn; its first answer token is scored
+  final_question: "You cannot call more tools. {question} Answer with a single word: yes or no."
+  messages:
+    budget_used: "Not executed: the budget of {max_tool_calls} tool calls is used up."
+    # replaces a tool output removed so that the final question fits in max_model_len
+    output_dropped: "[tool output removed to fit the context window]"
+    malformed: "Error: the tool call could not be parsed ({error})."
+    unknown_tool: "Error: unknown tool {name}. Available tools: {tools}."
+    missing_argument: "Error: missing argument {argument} of {name}."
+    unavailable: "Not available for this sample."
+    type_external: "{name} is declared outside the repository (library or JDK type): no source available."
+    type_implicit: "{name} is a java.lang type: no source in the repository."
+    type_ambiguous: "{count} types named {name} in the repository, for example: {paths}. Call again with a qualified name (package.{name})."
+    type_unresolved: "No type named {name} was found in the repository."
+    method_not_found: "No method named {method} in {type}. Its methods: {methods}."
+    no_usages: "No line of the repository mentions {name}."
+    usages: "{n_lines} lines in {n_files} files mention {name} (import lines skipped); first {shown}:"
+  tools:
+    - type: function
+      function:
+        name: get_enclosing_class
+        description: >-
+          Skeleton of the class that declares the fragment (for a class fragment:
+          its outer class when it is nested, else the package, imports count and
+          other top-level types of its file): fields and member signatures,
+          bodies omitted.
+        parameters:
+          type: object
+          properties: {}
+          required: []
+    - type: function
+      function:
+        name: open_type
+        description: >-
+          Skeleton of a class, interface, enum or record of the repository,
+          resolved from the file of the fragment (imports, same package, unique
+          name): fields and member signatures, bodies omitted.
+        parameters:
+          type: object
+          properties:
+            name:
+              type: string
+              description: Simple name (Order), nested name (Order.Item) or qualified name (com.shop.Order).
+          required: [name]
+    - type: function
+      function:
+        name: read_method
+        description: Full source of the methods (all overloads) or constructors with this name declared in a type of the repository.
+        parameters:
+          type: object
+          properties:
+            type_name:
+              type: string
+              description: Name of the declaring type, resolved like open_type.
+            method_name:
+              type: string
+              description: Method name (the type name for constructors).
+          required: [type_name, method_name]
+    - type: function
+      function:
+        name: find_usages
+        description: "Lines of the repository that mention a name (whole-word match, import lines skipped), as path:line: code."
+        parameters:
+          type: object
+          properties:
+            name:
+              type: string
+              description: Identifier to search for (class, method or field name).
+          required: [name]
+    - type: function
+      function:
+        name: get_metrics
+        description: >-
+          Size counts of the fragment: physical and non-blank lines, characters,
+          tokens, syntax tree nodes and depth, methods, fields, statements,
+          parameters of the first method, maximum block nesting, distinct
+          identifiers, classes and comments.
+        parameters:
+          type: object
+          properties: {}
+          required: []

@@ -1,0 +1,186 @@
+# LLM judge given more and more repository context (conditions C0 to C4, SHUF, FACTS_ONLY, PAD, REPLAY).
+# scripts/llm/build_context_packages.py, scripts/llm/llm_context_judge.py,
+# scripts/llm/eval_context_judge.py
+run:
+  name: context_study
+
+context_study:
+  folds: artifacts/folds/mlcq_cv.json
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  # level of every json_index (method or class)
+  sample_meta: data/derived/mlcq_sample_meta.csv
+  # 14 tree-sitter size counts of every snippet (get_metrics tool of C4)
+  size_features: data/derived/size_features.csv
+  # Java-only snapshots <owner>__<repo>@<commit>/ (scripts/data/fetch_repo_snapshots.py)
+  snapshots_dir: data/repo_snapshots
+
+  packages:
+    jsonl: data/derived/context_packages/mlcq_context.jsonl
+    stats: data/derived/context_packages/mlcq_context_stats.json
+    # per-snapshot index of top-level type names -> [path, package] and Java files
+    type_index_dir: data/derived/context_packages/type_index
+    workers: 8
+    options:
+      # characters kept on one skeleton line
+      header_chars: 240
+      signature_chars: 200
+      modifiers_chars: 120
+      field_type_chars: 80
+      field_initializer_chars: 80
+      max_enum_constants: 30
+      skeleton_max_members: 200
+      referenced_max_members: 60
+      top_referenced_types: 5
+      facts_items: 8
+      facts_groups: 8
+      max_usage_lines: 10
+      usage_lines_per_file: 2
+      usage_line_chars: 160
+      # java.lang names never resolved by the unique simple-name rule
+      implicit_types: [Object, String, StringBuilder, StringBuffer, CharSequence, Integer, Long, Short, Byte,
+                       Double, Float, Boolean, Character, Number, Math, StrictMath, System, Thread, Runnable,
+                       Class, ClassLoader, Enum, Record, Iterable, Comparable, AutoCloseable, Cloneable,
+                       Throwable, Exception, Error, RuntimeException, IllegalArgumentException,
+                       IllegalStateException, NullPointerException, UnsupportedOperationException,
+                       IndexOutOfBoundsException, ArrayIndexOutOfBoundsException, ClassCastException,
+                       ArithmeticException, NumberFormatException, InterruptedException,
+                       CloneNotSupportedException, ReflectiveOperationException, ClassNotFoundException,
+                       SecurityException, StackOverflowError, OutOfMemoryError, AssertionError, Void,
+                       Override, Deprecated, SuppressWarnings, FunctionalInterface, SafeVarargs, Process,
+                       ProcessBuilder, Runtime, ThreadLocal, InheritableThreadLocal, Package, Module]
+
+  judge:
+    prompts: prompts/context_judge.yml
+    out_root: artifacts/context_study/scores
+    # judge to run when --judge is not given
+    default_judge: qwen36_27b_fp8
+    # suffix of the judge directory name (<judge><tag>)
+    tag: ""
+    # prompts per vLLM generate call (resume granularity)
+    chunk_size: 1024
+    # optional smoke subset (null = every json_index of the folds meta)
+    smoke:
+      n_per_level: null
+      min_positives_per_smell: 4
+      seed: 0
+      include_agent_subset: false
+    # donor of the SHUF skeleton is drawn with this seed
+    shuffle_seed: 0
+    # token budgets (judge tokenizer)
+    budgets:
+      max_code_tokens: 7000
+      skeleton: 1500
+      facts: 600
+      referenced_each: 700
+      referenced_total: 2400
+      usages: 800
+      # REPLAY: all tool outputs of the query together
+      replay_total: 7000
+      # context budget scales tried in turn until the prompt fits
+      fit_scales: [1.0, 0.75, 0.5, 0.35, 0.25, 0.15, 0.1, 0.05, 0.0]
+
+    # C4 tool call statuses shown in REPLAY
+    replay:
+      statuses: [ok, empty, unresolved, external, implicit, ambiguous, method_not_found, unavailable, invalid_name]
+
+    agent:
+      max_tool_calls: 6
+      # new tokens per assistant turn (thinking off)
+      max_turn_tokens: 384
+      max_tool_output_tokens: 1200
+      # conversations run in lockstep per chunk (resume granularity)
+      chunk_size: 256
+      find_usages_max_lines: 15
+      find_usages_per_file: 3
+      line_chars: 160
+      skeleton_max_members: 200
+      # snapshots whose file texts stay in memory for find_usages
+      snapshot_cache: 4
+      # tokens kept free for the final question
+      final_reserve_tokens: 256
+      final_question_margin_tokens: 32
+      message_overhead_tokens: 16
+      # --dry-run: conversations on which every tool is tried once
+      dry_run_tool_samples: 50
+
+    # stratified subset of C4 (positives_per_smell null = all)
+    agent_subset:
+      negatives_per_positive: 3
+      seed: 0
+      positives_per_smell: null
+
+    answer:
+      yes_variants: ["yes", "Yes", "YES", " yes", " Yes", " YES"]
+      no_variants: ["no", "No", "NO", " no", " No", " NO"]
+
+    sampling:
+      max_tokens: 1
+      temperature: 0.0
+      logprobs: 20
+
+    judges:
+      qwen36_27b_fp8:
+        hf_id: Qwen/Qwen3.6-27B-FP8
+        chat_template_kwargs:
+          enable_thinking: false
+        stop_tokens: ["<|im_end|>", "<|endoftext|>"]
+        engine:
+          max_model_len: 16384
+          gpu_memory_utilization: 0.92
+          tensor_parallel_size: 1
+          dtype: auto
+          enforce_eager: false
+          max_logprobs: 20
+          max_num_seqs: 64
+          seed: 0
+          language_model_only: true
+      qwen25_coder_7b_instruct:
+        model_path: data/models/Qwen__Qwen2.5-Coder-7B-Instruct
+        chat_template_kwargs:
+          enable_thinking: false
+        stop_tokens: ["<|im_end|>", "<|endoftext|>"]
+        engine:
+          max_model_len: 16384
+          gpu_memory_utilization: 0.9
+          tensor_parallel_size: 1
+          dtype: bfloat16
+          enforce_eager: false
+          max_logprobs: 20
+          max_num_seqs: 128
+          seed: 0
+
+  eval:
+    # conditions evaluated with the shared cross-validation protocol
+    cv_conditions: [C0, C1, C2, C3, SHUF, FACTS_ONLY, PAD]
+    # conditions compared on the agent subset
+    subset_conditions: [C0, C1, C2, C3, SHUF, FACTS_ONLY, PAD, C4, REPLAY, REASON]
+    baseline: C0
+    # paired differences A minus B on the same bootstrap draws
+    contrasts: [[C4, REPLAY], [C4, REASON], [REASON, C0], [C3, PAD], [C1, SHUF], [C2, FACTS_ONLY]]
+    strategies: [kfold, group_kfold]
+    seeds: null
+    folds_subset: null
+    threshold_steps: 101
+    # score when neither yes nor no is in the top K
+    nan_fill: 0.0
+    # error: every pair must be scored in every condition, drop: keep common pairs (smoke runs)
+    missing: error
+    # sigmoid(logit(score) / T) before threshold tuning
+    score_temperatures: [1.0, 4.0]
+    out_dir: artifacts/context_study/cv
+    report_dir: artifacts/context_study/report
+    # frozen: C0 threshold for every condition, retuned: own validation threshold
+    mcc_threshold_modes: [frozen, retuned]
+    # paired bootstrap clustered by repository
+    bootstrap:
+      draws: 2000
+      seed: 0
+      level: 0.95
+      cluster: repository
+    figure:
+      enabled: true
+      bins: 24
+      log_odds_clip: 12.0
+      size: [12, 3]
+      colors: {negative: "#2a78d6", positive: "#eb6834"}
+      summary_size: [12, 5.2]

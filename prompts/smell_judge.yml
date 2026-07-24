@@ -1,0 +1,133 @@
+# Zero-shot prompts for the LLM smell judge (scripts/llm/llm_judge.py).
+#
+# The definitions paraphrase Fowler (Refactoring, 1999 and 2018 editions) and
+# the descriptions given to the MLCQ reviewers (Madeyski and Lewowski, 2020).
+# Feature envy and long method are asked for method-level samples, blob and
+# data class for class-level samples. The answer must be one word, yes or no:
+# the judge reads the probability of that first token.
+#
+# DACOS method snippets are asked about complex method and long parameter
+# list. Complex method follows Suryanarayana, Samarthyam and Sharma
+# (Refactoring for Software Design Smells, 2014) as implemented in
+# DesigniteJava (high cyclomatic complexity); long parameter list follows
+# Fowler (1999). Only the questions of the labels of a run enter the prompt
+# fingerprint of scripts/llm/llm_judge.py, so adding a smell here leaves the
+# cached scores of the other smells valid.
+#
+# Placeholders in the question templates: {code} (the snippet, possibly
+# truncated) and {truncation_note} (empty, or `truncation.note` below).
+
+system: |-
+  You are an experienced Java developer doing a code review. You will be shown
+  one Java code fragment and asked whether it has one specific code smell.
+  Judge only from the code shown. Answer with a single word: yes or no.
+
+truncation:
+  # appended as the last line of a truncated snippet
+  marker: "// ... [snippet truncated: {omitted_lines} more lines not shown]"
+  # inserted in the question through {truncation_note} when the snippet was cut
+  note: "The fragment is long and was cut; the last line marks where it was truncated.\n\n"
+
+smells:
+  is_feature_envy:
+    level: method
+    question: |-
+      Code smell: feature envy.
+      Definition: a method has feature envy when it is more interested in the
+      data of other classes than in the data of its own class. Most of its work
+      reads fields of, or calls getters and other methods on, objects of one or
+      a few other classes, while it uses few members of the class it belongs
+      to. Such a method would fit better in the class whose data it uses.
+
+      {truncation_note}Method:
+      ```java
+      {code}
+      ```
+
+      Does this method have feature envy? Answer yes or no.
+
+  is_long_method:
+    level: method
+    question: |-
+      Code smell: long method.
+      Definition: a method is a long method when it is too long and does too
+      much to be understood easily. Typical signs are many statements, several
+      distinct steps that could each be extracted into a separate method with
+      its own name, many local variables and parameters, deep nesting, and long
+      conditional or loop bodies.
+
+      {truncation_note}Method:
+      ```java
+      {code}
+      ```
+
+      Is this a long method? Answer yes or no.
+
+  is_blob:
+    level: class
+    question: |-
+      Code smell: blob (also called god class or large class).
+      Definition: a class is a blob when it has grown too large and centralises
+      too much of the behaviour of the system. Typical signs are many fields
+      and methods, several unrelated responsibilities, low cohesion between its
+      methods, high complexity, and heavy use of data from other classes that
+      it controls.
+
+      {truncation_note}Class:
+      ```java
+      {code}
+      ```
+
+      Is this class a blob? Answer yes or no.
+
+  is_data_class:
+    level: class
+    question: |-
+      Code smell: data class.
+      Definition: a class is a data class when it mainly holds data and has
+      almost no behaviour of its own. Typical signs are fields exposed through
+      getters and setters (or public fields), and methods that only store or
+      return values, so that the logic working on this data lives in other
+      classes.
+
+      {truncation_note}Class:
+      ```java
+      {code}
+      ```
+
+      Is this class a data class? Answer yes or no.
+
+  is_complex_method:
+    level: method
+    question: |-
+      Code smell: complex method.
+      Definition: a method is a complex method when its cyclomatic complexity
+      is high, that is when its code has many independent paths. Every
+      decision point adds a path: if and else if branches, switch cases,
+      loops, catch clauses, conditional expressions and boolean conditions
+      combined with && or ||. Such a method is hard to understand, to test and
+      to change.
+
+      {truncation_note}Method:
+      ```java
+      {code}
+      ```
+
+      Is this a complex method? Answer yes or no.
+
+  is_long_parameter_list:
+    level: method
+    question: |-
+      Code smell: long parameter list.
+      Definition: a method has a long parameter list when it takes too many
+      parameters. A long list of parameters is hard to understand, easy to
+      get wrong at the call sites and tends to change whenever the method
+      needs more data. The method could often take an object that holds the
+      values, or obtain them itself.
+
+      {truncation_note}Method:
+      ```java
+      {code}
+      ```
+
+      Does this method have a long parameter list? Answer yes or no.

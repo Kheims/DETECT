@@ -1,0 +1,84 @@
+# Claude Code as a smell judge with and without repository access on a small stratified subset.
+# scripts/llm/claude_agent_judge.py
+claude_agent:
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  sample_meta: data/derived/mlcq_sample_meta.csv
+  prompts: prompts/smell_judge.yml
+  snapshots: data/repo_snapshots
+  out_dir: artifacts/claude_agent/sonnet5
+  model: claude-sonnet-5
+  workers: 4
+  retries: 3
+  timeout_seconds: 900
+  quota_cooldown_seconds: 600
+  # working directory of the snippet condition (no repository inside)
+  neutral_workdir: /private/tmp/claude_agent_neutral
+
+  # label -> column of the sample meta CSV with the stored label
+  label_columns:
+    is_feature_envy: y_fe
+    is_long_method: y_lm
+    is_blob: y_blob
+    is_data_class: y_dc
+
+  subset:
+    # JSON list of [json_index, label] pairs, or null to sample below
+    from_file: null
+    smells: [is_feature_envy, is_long_method, is_blob, is_data_class]
+    n_pos: 30
+    n_neg: 90
+    seed: 0
+
+  conditions:
+    snippet:
+      tools: ""
+      restricted: false
+      cwd: neutral
+      template: |-
+        You are an experienced Java developer doing a code review. You will be shown one Java {kind} and asked whether it has one specific code smell. Judge only from the code shown.
+
+        Code smell: {smell}.
+        Definition: {definition}
+
+        Code:
+        ```java
+        {code}
+        ```
+
+        Does this {kind} have the code smell {smell}? Think it through briefly. End your reply with one line of JSON exactly like {{"smell_probability": 37, "answer": "no"}}, where smell_probability is your probability (0 to 100) that the smell is present.
+    agent:
+      tools: "Read,Grep,Glob"
+      restricted: true
+      cwd: snapshot
+      template: |-
+        You are an experienced Java developer doing a code review. The current directory is a checkout of a Java repository. The target {kind} is in the file {file_path}, lines {start_line} to {end_line}:
+
+        ```java
+        {code}
+        ```
+
+        Code smell: {smell}.
+        Definition: {definition}
+
+        You can use the Read, Grep and Glob tools to inspect any file of this repository, for example the class that contains the target code, the classes it uses or the code that uses it. Investigate as much as you need, then decide whether the target {kind} has the code smell {smell}. End your reply with one line of JSON exactly like {{"smell_probability": 37, "answer": "no"}}, where smell_probability is your probability (0 to 100) that the smell is present.
+
+# scripts/llm/eval_claude_agent.py
+claude_agent_eval:
+  baseline: snippet
+  bootstrap: 2000
+  bootstrap_seed: 0
+  # other scorers on the same (sample, smell) pairs
+  references:
+    qwen36_27b_zeroshot:
+      kind: judge_scores
+      path: artifacts/llm_judge/qwen36_27b_fp8/scores.jsonl
+    size_logreg_seed42:
+      kind: oof_predictions
+      glob: artifacts/analysis/mlcq/shortcut_cv/size_features__logreg/predictions.jsonl
+      strategy: kfold
+      seed: 42
+    gcn_seed42:
+      kind: oof_predictions
+      glob: "artifacts/runs/*/predictions.jsonl"
+      strategy: kfold
+      seed: 42

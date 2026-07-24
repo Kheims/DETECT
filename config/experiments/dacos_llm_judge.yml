@@ -1,0 +1,26 @@
+# Zero-shot LLM judges (scripts/llm/llm_judge.py) on the DACOS method snippets, settings of llm_judge.yml.
+# CONFIG=config/experiments/dacos_llm_judge.yml sbatch scripts/slurm/llm_judge.sbatch qwen36_27b_fp8
+# python scripts/llm/eval_llm_judge.py --config config/experiments/dacos_llm_judge.yml --judge qwen36_27b_fp8
+_include_yml: llm_judge.yml
+
+run:
+  name: dacos_llm_judge
+
+llm_judge:
+  folds: artifacts/folds/dacos_cv.json
+  input_json: data/derived/dacos/dacos_methods.normalized.json
+  # checked against meta.label_order of the folds file
+  label_order: [is_complex_method, is_long_parameter_list]
+  # MLCQ raw review rows, not used in field mode
+  raw_json: null
+  raw_smell_names: null
+  # sample level from its `level` field, smell level from label_levels
+  levels:
+    mode: field
+    field: level
+    label_levels:
+      is_complex_method: method
+      is_long_parameter_list: method
+  out_root: artifacts/dacos/llm_judge
+  eval:
+    out_dir: artifacts/dacos/llm_judge_cv
