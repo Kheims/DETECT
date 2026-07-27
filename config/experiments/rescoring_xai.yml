@@ -1,0 +1,25 @@
+# Rescoring with rule_default labels on eligible samples for the BiLSTM and the Qwen2.5-Coder 7B judge.
+#   python scripts/cv/rescore_predictions.py --config config/experiments/rescoring_xai.yml
+_include_yml: rescoring.yml
+run:
+  name: rescoring_xai
+
+rescoring:
+  out_dir: artifacts/analysis/rescoring_xai
+  strategies: [kfold]
+  variant_checks: {}
+  inputs:
+    - {name: bilstm_attention, family: sequence, variants: [eligible, rule_default_eligible],
+       predictions: artifacts/xai/bilstm/predictions.jsonl}
+    - {name: judge_qwen7b, family: llm, variants: [eligible, rule_default_eligible],
+       predictions: artifacts/llm_judge_cv/qwen25_coder_7b_instruct/predictions.jsonl}
+  bootstrap:
+    enabled: false
+  summary:
+    strategies: [kfold]
+    min_cells: 5
+    rank_metrics: [macro_mcc]
+    label_comparison:
+      settings:
+        - {training_labels: stored, variant: eligible}
+        - {training_labels: stored, variant: rule_default_eligible}
