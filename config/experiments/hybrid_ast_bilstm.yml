@@ -1,0 +1,27 @@
+_include_yml: fe_relational_base.yml
+
+# Late fusion of the reference GCN (AST graph) and a BiLSTM with attention (token sequence).
+run:
+  name: hybrid_ast_bilstm
+
+training:
+  split_group_key: repo_url
+  labels_json: data/derived/MLCQCodeSmellSamples.normalized.rule_default.json
+  # sequence branch, same settings as the unified-benchmark BiLSTM
+  seq_max_tokens: 512
+  seq_min_freq: 2
+  seq_max_vocab: 10000
+  seq_embed_dim: 128
+  seq_hidden_dim: 256
+  seq_num_layers: 2
+  seq_dropout: 0.3
+  seq_mask_padding: false
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  grid:
+    training.architecture: [gcn]
+    training.loss: [focal]
+    training.hybrid_branch: [graph, seq, hybrid]
+    training.split_strategy: [random, group]

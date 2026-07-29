@@ -1,0 +1,12 @@
+_include_yml: hybrid_ast_bilstm.yml
+
+# Hybrid GCN and BiLSTM with one head per branch, mixed by a learned weight per label.
+run:
+  name: hybrid_weighted
+
+ablation:
+  grid:
+    training.architecture: [gcn]
+    training.loss: [focal]
+    training.hybrid_branch: [hybrid_weighted]
+    training.split_strategy: [random, group]
