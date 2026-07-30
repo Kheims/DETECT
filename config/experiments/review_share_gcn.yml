@@ -1,0 +1,22 @@
+_include_yml: gnn_cv.yml
+
+# Reference GCN trained on the consensus label or on the share of positive reviews.
+#   scripts/slurm/submit_ablation.sh config/experiments/review_share_gcn.yml 2
+run:
+  name: review_share_gcn
+
+training:
+  labels_json: data/derived/MLCQCodeSmellSamples.normalized.rule_default.json
+  review_shares_json: data/derived/mlcq_review_shares.json
+  save_predictions: true
+  early_stopping_metric: pr_auc
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46]
+  grid:
+    training.architecture: [gcn]
+    training.loss: [bce]
+    training.train_target: [consensus, review_share]
+    training.split_strategy: [kfold]
+    training.cv_fold: [0, 1, 2, 3, 4]

@@ -1,0 +1,25 @@
+_include_yml: code_finetune.yml
+
+# CodeBERT fine-tuned on the consensus label or on the share of positive reviews.
+# CONFIG=config/experiments/review_share_codebert.yml sbatch --array=0-4 scripts/slurm/code_finetune.sbatch
+# CONFIG=config/experiments/review_share_codebert.yml COLLECT=1 bash scripts/slurm/code_finetune.sbatch
+run:
+  name: review_share_codebert
+
+code_finetune:
+  input_json: data/derived/MLCQCodeSmellSamples.normalized.rule_default.json
+  review_shares: data/derived/mlcq_review_shares.json
+  strategies: [kfold]
+  dynamics: false
+  early_stopping:
+    metric: ap_macro
+  defaults:
+    loss: bce
+  models:
+    codebert_consensus:
+      path: microsoft__codebert-base__safetensors
+      target: consensus
+    codebert_review_share:
+      path: microsoft__codebert-base__safetensors
+      target: review_share
+  run_models: [codebert_consensus, codebert_review_share]

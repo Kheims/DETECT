@@ -1,0 +1,24 @@
+_include_yml: hybrid_cv.yml
+
+# BiLSTM with attention trained on the consensus label or on the share of positive reviews.
+#   scripts/slurm/submit_ablation.sh config/experiments/review_share_bilstm.yml 2
+run:
+  name: review_share_bilstm
+
+training:
+  labels_json: data/derived/MLCQCodeSmellSamples.normalized.rule_default.json
+  # from scripts/data/build_review_shares.py
+  review_shares_json: data/derived/mlcq_review_shares.json
+  save_predictions: true
+  early_stopping_metric: pr_auc
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46]
+  grid:
+    training.architecture: [gcn]
+    training.loss: [bce]
+    training.hybrid_branch: [seq]
+    training.train_target: [consensus, review_share]
+    training.split_strategy: [kfold]
+    training.cv_fold: [0, 1, 2, 3, 4]
