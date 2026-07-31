@@ -49,6 +49,18 @@ uv run python main.py --config config/experiments/gcn_baseline.yml
 
 Parses each snippet into an AST with ANTLR Java 8, builds PyTorch Geometric graphs with Child edges and 69-dim node features, trains with focal loss. Supports GCN, GAT, GraphSAGE via ablation config.
 
+### Shared cross-validation protocol
+
+Every model family can be trained on the same folds (5 folds x 5 seeds, plain or grouped by project) and compared on the same samples.
+
+```bash
+uv run python main.py --config config/experiments/gnn_cv.yml
+uv run python scripts/cv/cv_tabular.py --config config/experiments/tabular_cv.yml
+uv run python scripts/cv/summarize_cv.py --help
+```
+
+Each script under `scripts/<topic>/` starts with the command that runs it and the config it reads.
+
 ### Generate figures
 
 ```bash
@@ -104,9 +116,11 @@ config/
   experiments/                      # one YAML per experiment
 mlcq_graphs/
   pipeline.py                      # stage orchestrator + caching
-  models/                          # classical.py, sequence.py, gcn.py, gat.py, graphsage.py
-  training/                        # focal loss, weighted BCE
-  evaluation/                      # F1, MCC, PR-AUC, threshold tuning
+  models/                          # classical, sequence, GCN, GAT, GraphSAGE, R-GCN, readouts, GNN + BiLSTM fusion
+  training/                        # focal loss, weighted BCE, plain BCE
+  evaluation/                      # F1, MCC, PR-AUC, threshold tuning, shared cross-validation records
+  metamorphic.py                   # code transforms that keep or change a smell
+  xai/                             # helpers of the interpretability scripts
 scripts/
   NormalizeFromJson.py              # reviewer aggregation + binarization
   extract_designite_metrics.py      # batched DesigniteJava
@@ -117,6 +131,14 @@ scripts/
   train_sequence.py                 # PyTorch sequence training
   train_codebert.py                 # CodeBERT fine-tuning
   report_runs.py                    # tables + figures
+  data/                             # dataset conversion (DACOS, SmellyCode++), relational and size features, review shares
+  cv/                               # shared folds, tabular models, code model fine-tuning, summaries and figures
+  pretraining/                      # self-supervised GNN pre-training and DDP scaling
+  llm/                              # zero-shot LLM judges, repository context study, routing
+  labels/                           # MLCQ and DACOS label analyses, reviewer agreement, soft-label evaluation
+  analysis/                         # size control, metamorphic tests, transfer, PMD, effort-aware ranking
+  xai/                              # attributions of the GCN, BiLSTM, LLM judge and size model
+  slurm/                            # cluster job scripts
 tools/
   designite.jar                     # metric extraction
   antlr/                            # Java 8 grammar
