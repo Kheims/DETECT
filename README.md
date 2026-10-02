@@ -99,14 +99,24 @@ Config files inherit from `config/defaults.yml`.
 
 ```
 main.py                             # entry point
+pyproject.toml                      # dependencies, locked in uv.lock
 config/
   defaults.yml                      # all default parameters
   experiments/                      # one YAML per experiment
+  ablations/                        # GCN model and feature ablation
 mlcq_graphs/
-  pipeline.py                      # stage orchestrator + caching
-  models/                          # classical.py, sequence.py, gcn.py, gat.py, graphsage.py
-  training/                        # focal loss, weighted BCE
-  evaluation/                      # F1, MCC, PR-AUC, threshold tuning
+  pipeline.py                       # stage orchestrator + caching
+  config.py                         # YAML includes and CLI overrides
+  constants.py                      # label order and edge types
+  token_encoder.py                  # Word2Vec on AST token sequences
+  metamorphic.py                    # transforms that keep or change a smell
+  reporting.py                      # training and ablation figures
+  visualization.py                  # PR, ROC, F1 and confusion plots
+  models/                           # classical, sequence, GNN, genetic, fusion
+  training/                         # focal loss, weighted BCE, plain BCE
+  evaluation/                       # metrics, threshold tuning, shared CV
+  stats/                            # paired t-test and Wilcoxon
+  xai/                              # helpers of the interpretability scripts
 scripts/
   NormalizeFromJson.py              # reviewer aggregation + binarization
   extract_designite_metrics.py      # batched DesigniteJava
@@ -116,12 +126,27 @@ scripts/
   train_classical.py                # sklearn training
   train_sequence.py                 # PyTorch sequence training
   train_codebert.py                 # CodeBERT fine-tuning
+  train_gcn_baseline.py             # GNN training, run by the pipeline
+  train_gcn_baseline.slurm          # cluster job for the GNN training
+  train_genetic.py                  # genetic algorithm on OO metrics
   report_runs.py                    # tables + figures
+  plot_confusion_matrices.py        # confusion matrices of every family
+  data/                             # DACOS, SmellyCode++ conversion, features
+  cv/                               # shared folds, model runs and tables
+  pretraining/                      # self-supervised GNN pre-training, DDP
+  llm/                              # LLM judges, context study, routing
+  labels/                           # label analyses, reviewer agreement
+  analysis/                         # size control, transfer, PMD, metamorphic
+  xai/                              # attributions of the detectors
+  slurm/                            # cluster job scripts
+prompts/                            # prompts of the LLM judges
+tests/                              # metamorphic and LLM context tests
 tools/
   designite.jar                     # metric extraction
-  antlr/                            # Java 8 grammar
-data/                               # datasets (included)
-artifacts/                          # outputs (gitignored)
+  antlr/                            # Java grammars + generated parser
+docs/                               # pipeline diagram
+data/                               # MLCQ, raw and normalized
+artifacts/                          # outputs, not in the repository
 ```
 
 
