@@ -14,8 +14,8 @@ Usage:
         --method median \\
         --rule default
 
-    # Madeyski DS1 preset
-    python scripts/NormalizeFromJson.py --rule ds1
+    # Madeyski DS2 preset (major and critical)
+    python scripts/NormalizeFromJson.py --rule ds2
 
     # Custom positive class
     python scripts/NormalizeFromJson.py --rule major,critical
@@ -39,10 +39,10 @@ Y_ORDER = ["feature envy", "long method", "blob", "data class"]
 # Binarization presets: which severity strings count as the positive class.
 RULE_PRESETS: dict[str, set[str]] = {
     "default":      {"minor", "major", "critical"},  # severity != none
-    "madeyskiDS1":  {"major", "critical"},            # Madeyski & Lewowski IST 2023 DS1
-    "madeyskiDS2":  {"critical"},                     # Madeyski & Lewowski IST 2023 DS2
-    "ds1":          {"major", "critical"},             # alias
-    "ds2":          {"critical"},                      # alias
+    "madeyskiDS1":  {"minor", "major", "critical"},  # Madeyski & Lewowski IST 2023 DS1, same as default
+    "madeyskiDS2":  {"major", "critical"},            # Madeyski & Lewowski IST 2023 DS2
+    "ds1":          {"minor", "major", "critical"},  # alias
+    "ds2":          {"major", "critical"},            # alias
 }
 
 

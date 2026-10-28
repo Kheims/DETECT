@@ -70,9 +70,9 @@ uv run python main.py --config config/experiments/classical_xgboost_pipeline.yml
   '--training.param_grid.n_estimators=[50,100,500]' \
   '--training.param_grid.max_depth=[3,5,10]'
 
-# Switch binarization to match Madeyski DS1
+# Switch binarization to Madeyski DS2 (major and critical only)
 uv run python main.py --config config/experiments/classical_rf_pipeline.yml \
-  '--normalization.rule=madeyskiDS1'
+  '--normalization.rule=madeyskiDS2'
 
 # Force rebuild (ignore cache)
 uv run python main.py --config config/experiments/classical_rf_pipeline.yml \
