@@ -57,6 +57,7 @@ class PipelineRunner:
     STAGE_ORDER: tuple[str, ...] = (
         "normalization",
         "construction",
+        "folds",
         "metric_extraction",
         "dataset",
         "token_encoder",
@@ -131,6 +132,7 @@ class PipelineRunner:
             "normalization": "normalization",
             "normalize": "normalization",
             "construction": "construction",
+            "folds": "folds",
             "metric_extraction": "metric_extraction",
             "metric-extraction": "metric_extraction",
             "metrics": "metric_extraction",
@@ -199,6 +201,21 @@ class PipelineRunner:
                 ),
             )
             stages["construction"] = construction_state
+
+        folds_state = None
+        if bool(config.get("folds", {}).get("enabled", False)):
+            if construction_state is None:
+                raise ValueError("Folds stage requires construction stage output")
+            folds_state = self._run_stage_with_logs(
+                "folds",
+                lambda: self._run_folds(
+                    config,
+                    artifacts_root,
+                    construction_state,
+                    force_stage=("folds" in forced_stages),
+                ),
+            )
+            stages["folds"] = folds_state
 
         metric_extraction_state = None
         if bool(config.get("metric_extraction", {}).get("enabled", False)):
@@ -940,6 +957,102 @@ class PipelineRunner:
 
         return StageState(
             name="construction",
+            fingerprint=fingerprint,
+            stage_dir=str(stage_dir),
+            reused=False,
+            outputs=outputs,
+        )
+
+    def _run_folds(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        construction_state: StageState,
+        force_stage: bool,
+    ) -> StageState:
+        """Train, validation and test parts shared by every model, one per (strategy, seed, fold).
+
+        The parts are those the GNN runs rebuild with split_kfold, over the snippets that have an AST,
+        so that models without graphs read the same parts from folds.json.
+        """
+        stage_cfg = config.get("folds", {})
+        run_cfg = config.get("run", {})
+        num_labels = int(config.get("training", {}).get("num_labels", 4))
+
+        payload = {
+            "stage": "folds",
+            "config": stage_cfg,
+            "num_labels": num_labels,
+            "construction_fingerprint": construction_state.fingerprint,
+        }
+        fingerprint = stable_fingerprint(jsonable(payload))
+        stage_dir = artifacts_root / "cache" / "folds" / fingerprint
+        outputs = {"folds_json": str(stage_dir / "folds.json")}
+
+        if self._can_reuse(
+            stage_dir,
+            outputs,
+            force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
+        ):
+            return StageState(
+                name="folds",
+                fingerprint=fingerprint,
+                stage_dir=str(stage_dir),
+                reused=True,
+                outputs=outputs,
+            )
+
+        strategies = [str(s) for s in stage_cfg.get("strategies", ["kfold"])]
+        unknown = sorted(set(strategies) - {"kfold", "group_kfold"})
+        if unknown:
+            raise ValueError(f"folds.strategies supports kfold and group_kfold, got {unknown}")
+        seeds = [int(s) for s in stage_cfg.get("seeds", [42])]
+        n_folds = int(stage_cfg.get("n_folds", 5))
+        val_ratio = float(stage_cfg.get("val_ratio", 0.1))
+        group_key = str(stage_cfg.get("group_key", "repo_url"))
+
+        # same rows and order as the dataset stage (scripts/build_pyg_dataset_from_dot.py):
+        # success or skipped rows whose DOT file exists, sorted by json_index
+        rows = []
+        for line in Path(construction_state.outputs["manifest_path"]).read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("status") not in {"success", "skipped"}:
+                continue
+            if not to_path(self.project_root, row["output_dot"]).exists():
+                continue
+            rows.append(row)
+        rows.sort(key=lambda row: int(row["json_index"]))
+        json_index = [int(row["json_index"]) for row in rows]
+        labels = [[1 if bool(v) else 0 for v in row["y"]] for row in rows]
+        input_json = to_path(self.project_root, config.get("construction", {}).get("input_json"))
+        entries = json.loads(input_json.read_text())
+        groups = [str(entries[i].get(group_key, "")) for i in json_index]
+
+        from scripts.cv.export_cv_folds import build_cv_folds
+
+        splits = build_cv_folds(json_index, labels, groups, strategies, seeds, n_folds, val_ratio, num_labels)
+        folds = {
+            "meta": {
+                "construction_fingerprint": construction_state.fingerprint,
+                "num_samples": len(json_index),
+                "label_order": LABEL_ORDER[:num_labels],
+                "n_folds": n_folds,
+                "val_ratio": val_ratio,
+                "seeds": seeds,
+                "strategies": strategies,
+                "group_key": group_key,
+                "input_json": str(input_json),
+                "json_index": json_index,
+            },
+            "splits": splits,
+        }
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        Path(outputs["folds_json"]).write_text(json.dumps(folds))
+        self._write_stage_meta(stage_dir=stage_dir, payload=payload, outputs=outputs)
+        return StageState(
+            name="folds",
             fingerprint=fingerprint,
             stage_dir=str(stage_dir),
             reused=False,

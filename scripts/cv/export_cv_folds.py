@@ -12,6 +12,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -27,6 +28,41 @@ from mlcq_graphs.pipeline import PipelineRunner, to_path  # noqa: E402
 from scripts.train_gcn_baseline import split_kfold  # noqa: E402
 
 KFOLD_STRATEGIES = ("kfold", "group_kfold")
+
+
+def build_cv_folds(
+    json_index: list[int],
+    labels: list[list[int]],
+    groups: list[str],
+    strategies: list[str],
+    seeds: list[int],
+    n_folds: int,
+    val_ratio: float,
+    num_labels: int,
+) -> list[dict[str, Any]]:
+    dataset = [Data(y=torch.as_tensor(y).view(-1).int(), num_nodes=1) for y in labels]
+    splits = []
+    for strategy in strategies:
+        for seed in seeds:
+            for fold in range(n_folds):
+                *_, positions = split_kfold(
+                    dataset=dataset,
+                    groups=groups if strategy == "group_kfold" else None,
+                    n_folds=n_folds,
+                    fold=fold,
+                    val_ratio=val_ratio,
+                    seed=seed,
+                    num_labels=num_labels,
+                )
+                splits.append(
+                    {
+                        "strategy": strategy,
+                        "seed": seed,
+                        "fold": fold,
+                        **{p: sorted(json_index[i] for i in positions[p]) for p in ("train", "val", "test")},
+                    }
+                )
+    return splits
 
 
 def main() -> None:
@@ -55,49 +91,30 @@ def main() -> None:
     construction = runner._run_construction(cfg, artifacts_root, force_stage=False)
     dataset_state = runner._run_dataset(cfg, artifacts_root, construction, force_stage=False)
     graphs = torch.load(dataset_state.outputs["dataset_path"], weights_only=False)
-    dataset = []
-    for g in graphs:
-        d = Data(y=g.y.view(-1).int(), num_nodes=1)
-        d.json_index = int(g.json_index)
-        dataset.append(d)
-    json_index = [d.json_index for d in dataset]
+    json_index = [int(g.json_index) for g in graphs]
+    labels = [g.y.view(-1).int().tolist() for g in graphs]
     entries = json.loads(group_json.read_text())
     groups = [str(entries[i].get(group_key, "")) for i in json_index]
     split_dir = artifacts_root / "cache" / "splits" / dataset_state.fingerprint
 
-    splits, checked = [], 0
-    for strategy in strategies:
-        for seed in seeds:
-            for fold in range(n_folds):
-                *_, positions = split_kfold(
-                    dataset=dataset,
-                    groups=groups if strategy == "group_kfold" else None,
-                    n_folds=n_folds,
-                    fold=fold,
-                    val_ratio=val_ratio,
-                    seed=seed,
-                    num_labels=num_labels,
-                )
-                cached = split_dir / f"split_{strategy}_{group_key}_k{n_folds}_f{fold}_seed_{seed}.json"
-                if cached.exists():
-                    stored = json.loads(cached.read_text())["split_indices"]
-                    if any(sorted(stored[p]) != sorted(positions[p]) for p in ("train", "val", "test")):
-                        raise SystemExit(f"rebuilt fold differs from {cached}")
-                    checked += 1
-                splits.append(
-                    {
-                        "strategy": strategy,
-                        "seed": seed,
-                        "fold": fold,
-                        **{p: sorted(json_index[i] for i in positions[p]) for p in ("train", "val", "test")},
-                    }
-                )
+    splits = build_cv_folds(json_index, labels, groups, strategies, seeds, n_folds, val_ratio, num_labels)
+
+    # the GNN runs cache their parts as positions in the dataset
+    position = {j: i for i, j in enumerate(json_index)}
+    checked = 0
+    for split in splits:
+        cached = split_dir / f"split_{split['strategy']}_{group_key}_k{n_folds}_f{split['fold']}_seed_{split['seed']}.json"
+        if cached.exists():
+            stored = json.loads(cached.read_text())["split_indices"]
+            if any(sorted(stored[p]) != sorted(position[j] for j in split[p]) for p in ("train", "val", "test")):
+                raise SystemExit(f"rebuilt fold differs from {cached}")
+            checked += 1
 
     payload = {
         "meta": {
             "config": str(args.config),
             "dataset_fingerprint": dataset_state.fingerprint,
-            "num_samples": len(dataset),
+            "num_samples": len(json_index),
             "label_order": LABEL_ORDER[:num_labels],
             "n_folds": n_folds,
             "val_ratio": val_ratio,

@@ -21,6 +21,16 @@ construction:
   limit: null
   overwrite: false
 
+# Train, validation and test parts shared by every model (cache/folds/<fingerprint>/folds.json),
+# built with the splitter of the GNN runs over the snippets that have an AST
+folds:
+  enabled: false
+  strategies: [kfold]
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  n_folds: 5
+  val_ratio: 0.1
+  group_key: repo_url
+
 dataset:
   enabled: true
   edge_types: [Child, NextToken]
