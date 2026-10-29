@@ -325,6 +325,9 @@ class PipelineRunner:
             elif used_method == "sequence":
                 if token_dataset_state is None:
                     raise ValueError("Sequence training requires token_dataset stage")
+            elif used_method == "chunked_sequence":
+                if folds_state is None and not config.get("training", {}).get("folds_json"):
+                    raise ValueError("Chunked sequence training requires the folds stage or training.folds_json")
             training_state = self._run_stage_with_logs(
                 "training",
                 lambda: self._run_training(
@@ -338,6 +341,7 @@ class PipelineRunner:
                     normalization_state=normalization_state,
                     pretraining_state=pretraining_state,
                     force_stage=("training" in forced_stages),
+                    folds_state=folds_state,
                 ),
             )
             stages["training"] = training_state
@@ -402,6 +406,10 @@ class PipelineRunner:
         grid = ablation_cfg.get("grid", {})
         if not isinstance(grid, dict) or not grid:
             raise ValueError("ablation.grid must be a non-empty mapping")
+        # a null value drops a key inherited from defaults.yml (the grid is deep-merged)
+        grid = {key: value for key, value in grid.items() if value is not None}
+        if not grid:
+            raise ValueError("ablation.grid has no key left after dropping the null ones")
 
         seeds = ablation_cfg.get("seeds", [base_cfg.get("training", {}).get("seed", 42)])
         if not isinstance(seeds, list) or not seeds:
@@ -1027,7 +1035,8 @@ class PipelineRunner:
         json_index = [int(row["json_index"]) for row in rows]
         labels = [[1 if bool(v) else 0 for v in row["y"]] for row in rows]
         input_json = to_path(self.project_root, config.get("construction", {}).get("input_json"))
-        entries = json.loads(input_json.read_text())
+        input_bytes = input_json.read_bytes()
+        entries = json.loads(input_bytes)
         groups = [str(entries[i].get(group_key, "")) for i in json_index]
 
         from scripts.cv.export_cv_folds import build_cv_folds
@@ -1044,6 +1053,7 @@ class PipelineRunner:
                 "strategies": strategies,
                 "group_key": group_key,
                 "input_json": str(input_json),
+                "input_json_md5": hashlib.md5(input_bytes).hexdigest(),
                 "json_index": json_index,
             },
             "splits": splits,
@@ -1435,10 +1445,18 @@ class PipelineRunner:
         normalization_state: StageState | None = None,
         pretraining_state: StageState | None = None,
         force_stage: bool = False,
+        folds_state: StageState | None = None,
     ) -> StageState:
         stage_cfg = config.get("training", {})
         used_method = str(stage_cfg.get("used_method", "gnn")).lower()
 
+        if used_method == "chunked_sequence":
+            return self._run_training_chunked_sequence(
+                config=config,
+                artifacts_root=artifacts_root,
+                folds_state=folds_state,
+                force_stage=force_stage,
+            )
         if used_method == "classical":
             return self._run_training_classical(
                 config=config,
@@ -1463,7 +1481,7 @@ class PipelineRunner:
         if used_method != "gnn":
             raise ValueError(
                 f"Unsupported training.used_method: {used_method!r}. "
-                f"Expected one of: gnn, classical, sequence, codebert."
+                f"Expected one of: gnn, classical, sequence, codebert, chunked_sequence."
             )
 
         # GNN path (existing behaviour)
@@ -1978,6 +1996,76 @@ class PipelineRunner:
             training_cfg=stage_cfg,
             token_dir=token_dataset_state.outputs["token_dir"],
             output_dir=str(run_dir),
+        )
+
+        self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
+        return StageState(
+            name="training",
+            fingerprint=fingerprint,
+            stage_dir=str(run_dir),
+            reused=False,
+            outputs=outputs,
+        )
+
+    def _run_training_chunked_sequence(
+        self,
+        config: dict[str, Any],
+        artifacts_root: Path,
+        folds_state: StageState | None,
+        force_stage: bool,
+    ) -> StageState:
+        """Dispatch for training.used_method=chunked_sequence: one model, one (seed, fold) of the folds."""
+        stage_cfg = config.get("training", {})
+        run_cfg = config.get("run", {})
+
+        if stage_cfg.get("folds_json"):
+            folds_json = to_path(self.project_root, stage_cfg["folds_json"])
+            folds_id = hashlib.md5(folds_json.read_bytes()).hexdigest()
+        else:
+            folds_json = Path(folds_state.outputs["folds_json"])
+            folds_id = folds_state.fingerprint
+        folds_meta = json.loads(folds_json.read_text())["meta"]
+        input_json = to_path(self.project_root, stage_cfg.get("input_json") or folds_meta["input_json"])
+
+        payload = {
+            "stage": "training",
+            "used_method": "chunked_sequence",
+            "config": stage_cfg,
+            "folds": folds_id,
+            "input_json_md5": hashlib.md5(input_json.read_bytes()).hexdigest(),
+        }
+        fingerprint = stable_fingerprint(jsonable(payload))
+        run_dir = artifacts_root / "runs" / fingerprint
+        outputs = {
+            "run_dir": str(run_dir),
+            "metrics_path": str(run_dir / "metrics.json"),
+            "record_path": str(run_dir / "record.json"),
+            "predictions_path": str(run_dir / "predictions.jsonl"),
+        }
+
+        if self._can_reuse(
+            run_dir,
+            outputs,
+            force=bool(run_cfg.get("force_rebuild", False)) or force_stage,
+        ):
+            return StageState(
+                name="training",
+                fingerprint=fingerprint,
+                stage_dir=str(run_dir),
+                reused=True,
+                outputs=outputs,
+            )
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        from scripts.train_chunked_sequence import run_chunked_sequence
+
+        print(f"[train] chunked sequence in-process  model={stage_cfg.get('model')} "
+              f"seed={stage_cfg.get('seed')} fold={stage_cfg.get('cv_fold')}")
+        run_chunked_sequence(
+            training_cfg=stage_cfg,
+            input_json=input_json,
+            folds_json=folds_json,
+            output_dir=run_dir,
         )
 
         self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)

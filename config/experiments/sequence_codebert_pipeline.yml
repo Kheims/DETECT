@@ -4,17 +4,11 @@ run:
   name: sequence_codebert_pipeline
   artifacts_root: artifacts
 
-normalization:
-  enabled: true
-  input_json: data/MLCQCodeSmellSamples.json
-  method: median
-  rule: default
-
 construction:
-  enabled: false
+  enabled: true
 
-metric_extraction:
-  enabled: false
+folds:
+  enabled: true
 
 dataset:
   enabled: false
@@ -22,24 +16,40 @@ dataset:
 token_encoder:
   enabled: false
 
-token_dataset:
-  enabled: false
-
+# every key read by scripts/train_chunked_sequence.py is set here, none comes from the GNN defaults
 training:
   enabled: true
-  used_method: codebert
+  used_method: chunked_sequence
   model: codebert
   num_labels: 4
-  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   device: auto
-  max_length: 256
+  # a Hugging Face model id or a local folder
+  pretrained: microsoft/codebert-base
+  chunk_len: 512
+  max_chunks: 8
   dropout: 0.1
   batch_size: 16
+  # chunks per forward pass when predicting
+  eval_batch_size: 64
+  # chunks per forward pass when training, the gradient is the mean over the batch
+  max_chunks_per_forward: 48
+  gradient_checkpointing: true
+  # bf16 autocast only on GPUs with native bf16, fp32 otherwise
+  allow_bf16: false
   lr: 0.00002
   weight_decay: 0.01
+  warmup_ratio: 0.1
   epochs: 10
-  patience: 3
-  loss: focal
-  focal_gamma: 2.0
-  train_ratio: 0.8
-  val_ratio: 0.1
+  patience: 10
+  min_delta: 0.0
+  loss: bce
+  grad_clip: 1.0
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  grid:
+    # null drops the GNN keys of the defaults grid
+    training.architecture: null
+    training.loss: null
+    training.cv_fold: [0, 1, 2, 3, 4]

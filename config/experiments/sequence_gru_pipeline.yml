@@ -4,17 +4,11 @@ run:
   name: sequence_gru_pipeline
   artifacts_root: artifacts
 
-normalization:
-  enabled: true
-  input_json: data/MLCQCodeSmellSamples.json
-  method: median
-  rule: default
-
 construction:
-  enabled: false
+  enabled: true
 
-metric_extraction:
-  enabled: false
+folds:
+  enabled: true
 
 dataset:
   enabled: false
@@ -22,29 +16,37 @@ dataset:
 token_encoder:
   enabled: false
 
-token_dataset:
-  enabled: true
-  max_tokens: 512
-  min_freq: 2
-  max_vocab: 10000
-
+# every key read by scripts/train_chunked_sequence.py is set here, none comes from the GNN defaults
 training:
   enabled: true
-  used_method: sequence
+  used_method: chunked_sequence
   model: gru
   num_labels: 4
-  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   device: auto
+  chunk_len: 512
+  max_chunks: 3
+  min_freq: 2
+  max_vocab: 10000
   embed_dim: 128
   hidden_dim: 256
   num_layers: 2
   dropout: 0.3
   batch_size: 32
+  # snippets per batch when predicting
+  eval_batch_size: 64
   lr: 0.001
   weight_decay: 0.00001
   epochs: 50
   patience: 10
   loss: focal
   focal_gamma: 2.0
-  train_ratio: 0.8
-  val_ratio: 0.1
+  grad_clip: 1.0
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  grid:
+    # null drops the GNN keys of the defaults grid
+    training.architecture: null
+    training.loss: null
+    training.cv_fold: [0, 1, 2, 3, 4]
