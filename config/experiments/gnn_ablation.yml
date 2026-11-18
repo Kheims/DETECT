@@ -1,0 +1,17 @@
+_include_yml: gnn_gcn_pipeline.yml
+
+# The 48 graph models of the ablation on the shared folds: 3 architectures x 2 losses x 2 edge sets
+# x 2 node features x Word2Vec tokens or not, one seed x 5 folds.
+#   uv run python main.py --config config/experiments/gnn_ablation.yml
+run:
+  name: gnn_ablation
+
+ablation:
+  seeds: [42]
+  grid:
+    training.architecture: [gcn, gat, graphsage]
+    training.loss: [weighted_bce, focal]
+    dataset.edge_types: [[Child], [Child, NextToken]]
+    training.feature_mode: [type_only, type_numeric]
+    token_encoder.enabled: [true, false]
+    training.cv_fold: [0, 1, 2, 3, 4]
