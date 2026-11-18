@@ -122,6 +122,24 @@ def label_matrix_from_json(entries: list[dict[str, Any]], indices: np.ndarray, n
     return np.asarray(rows, dtype=np.int64)
 
 
+METHOD_SMELLS = {"feature envy", "long method"}
+CLASS_SMELLS = {"blob", "data class"}
+
+
+def snippet_levels(entries: list[dict[str, Any]]) -> dict[int, str]:
+    """method or class from the smells a snippet was reviewed for (mixed or none otherwise)."""
+    out = {}
+    for i, e in enumerate(entries):
+        reviewed = {s for s, v in e.get("labels", {}).items() if int(v.get("vote_count", 0)) > 0}
+        if reviewed and reviewed <= METHOD_SMELLS:
+            out[i] = "method"
+        elif reviewed and reviewed <= CLASS_SMELLS:
+            out[i] = "class"
+        else:
+            out[i] = "mixed" if reviewed else "none"
+    return out
+
+
 def tune_thresholds(y_true: np.ndarray, probs: np.ndarray, steps: int) -> np.ndarray:
     """Per-label threshold maximising F1 on validation, as in train_gcn_baseline."""
     grid = np.linspace(0.0, 1.0, max(int(steps), 3), dtype=np.float32)

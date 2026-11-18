@@ -38,16 +38,13 @@ from mlcq_graphs.evaluation.cv import (  # noqa: E402
     label_matrix_from_json,
     load_folds,
     prediction_rows,
+    snippet_levels,
     write_jsonl,
 )
 from scripts.build_token_dataset import build_vocab, tokenize_code  # noqa: E402
 
 RNN_MODELS = ("lstm", "bilstm", "bilstm_attention", "gru", "cnn")
 SMELL_NAMES = ("feature_envy", "long_method", "blob", "data_class")
-# keys of the normalized JSON labels, in the order of y
-LABEL_KEYS = ("feature envy", "long method", "blob", "data class")
-METHOD_SMELLS = {"feature envy", "long method"}
-CLASS_SMELLS = {"blob", "data class"}
 
 
 def _load_by_path(name: str, rel: str) -> Any:
@@ -100,20 +97,6 @@ def ap_macro(y: np.ndarray, p: np.ndarray) -> float:
 
 def f1_macro_05(y: np.ndarray, p: np.ndarray) -> float:
     return float(f1_score(y, (p >= 0.5).astype(int), average="macro", zero_division=0))
-
-
-def snippet_levels(entries: list[dict[str, Any]]) -> dict[int, str]:
-    """method or class from the smells a snippet was reviewed for (mixed or none otherwise)."""
-    out = {}
-    for i, e in enumerate(entries):
-        reviewed = {s for s in LABEL_KEYS if int(e.get("labels", {}).get(s, {}).get("vote_count", 0)) > 0}
-        if reviewed and reviewed <= METHOD_SMELLS:
-            out[i] = "method"
-        elif reviewed and reviewed <= CLASS_SMELLS:
-            out[i] = "class"
-        else:
-            out[i] = "mixed" if reviewed else "none"
-    return out
 
 
 def eligible_threshold(y: np.ndarray, p: np.ndarray) -> float:

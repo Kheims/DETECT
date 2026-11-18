@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import json
 import os
 import sys
@@ -26,7 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from mlcq_graphs.config import load_config, parse_cli_overrides  # noqa: E402
 from mlcq_graphs.constants import LABEL_ORDER  # noqa: E402
-from mlcq_graphs.evaluation.cv import read_jsonl, tune_thresholds  # noqa: E402
+from mlcq_graphs.evaluation.cv import read_jsonl, snippet_levels, tune_thresholds  # noqa: E402
 from mlcq_graphs.evaluation.metrics import compute_full_metrics  # noqa: E402
 
 FOLD_KEYS = ("cv_fold", "training.cv_fold")
@@ -169,11 +170,17 @@ def main() -> None:
     ecfg = cfg["eligible_eval"]
 
     labels = list(ecfg.get("label_order") or LABEL_ORDER)
-    with resolve(ecfg["sample_meta"]).open() as fh:
-        meta_rows = list(csv.DictReader(fh))
+    meta_rows: list[dict[str, str]] = []
+    if ecfg.get("sample_meta"):
+        with resolve(ecfg["sample_meta"]).open() as fh:
+            meta_rows = list(csv.DictReader(fh))
     eligible_of = None
     label_levels: dict[str, str] = {}
-    if ecfg.get("eligibility_columns"):
+    if ecfg.get("input_json"):
+        # levels from the smells each snippet was reviewed for, as in scripts/train_chunked_sequence.py
+        level_of = snippet_levels(json.loads(resolve(ecfg["input_json"]).read_text()))
+        label_levels = {str(k): str(v) for k, v in ecfg["label_levels"].items()}
+    elif ecfg.get("eligibility_columns"):
         cols = dict(ecfg["eligibility_columns"])
         if set(cols) != set(labels):
             raise SystemExit(f"eligible_eval.eligibility_columns must cover {labels}")
@@ -183,17 +190,19 @@ def main() -> None:
         level_col = str(ecfg.get("level_column", "level"))
         level_of = {int(r["json_index"]): r[level_col] for r in meta_rows}
         label_levels = {str(k): str(v) for k, v in ecfg["label_levels"].items()}
-        if set(label_levels) != set(labels):
-            raise SystemExit(f"eligible_eval.label_levels must cover {labels}")
+    if eligible_of is None and set(label_levels) != set(labels):
+        raise SystemExit(f"eligible_eval.label_levels must cover {labels}")
     steps = int(ecfg.get("threshold_steps", 101))
-    out_root = resolve(ecfg["out_dir"])
+    # eligible_eval.root: the artifacts folder of a series, for out_dir and the inputs of the config
+    root = resolve(ecfg.get("root", "."))
+    out_root = root / str(ecfg["out_dir"])
 
-    inputs = [(str(i["name"]), resolve(i["predictions"])) for i in ecfg.get("inputs", [])]
+    inputs = [(str(i["name"]), root / str(i["predictions"])) for i in ecfg.get("inputs", [])]
     inputs += [(spec.split("=", 1)[0], resolve(spec.split("=", 1)[1])) for spec in args.input]
     for name, pred_path in inputs:
         if any(ch in str(pred_path) for ch in "*?["):
             # concatenate the matching files into the output folder
-            parts = sorted(PROJECT_ROOT.glob(str(pred_path.relative_to(PROJECT_ROOT))))
+            parts = sorted(Path(part) for part in glob.glob(str(pred_path)))
             if not parts:
                 print(f"[eligible] skip {name}: no file matches {pred_path}", flush=True)
                 continue
