@@ -1,0 +1,34 @@
+# The 17 models of the benchmark, each smell scored on the snippets of its level, from the
+# predictions that main.py leaves in the report of each <family>_<model>_pipeline.yml.
+#   uv run python scripts/cv/eval_eligible.py --config config/experiments/benchmark.yml
+#   uv run python scripts/cv/summarize_cv.py artifacts/benchmark --folds artifacts/cache/folds/<fingerprint>/folds.json
+# A series with other labels or snippets has its own folder (run.artifacts_root of main.py):
+# give it as --eligible_eval.root, with the normalized JSON of its snippets as --eligible_eval.input_json.
+eligible_eval:
+  root: artifacts
+  input_json: data/MLCQCodeSmellSamples.normalized.json
+  label_levels:
+    is_feature_envy: method
+    is_long_method: method
+    is_blob: class
+    is_data_class: class
+  threshold_steps: 101
+  out_dir: benchmark
+  inputs:
+    - {name: xgboost, predictions: "reports/classical_xgboost_pipeline_*/predictions.jsonl"}
+    - {name: random_forest, predictions: "reports/classical_rf_pipeline_*/predictions.jsonl"}
+    - {name: decision_tree, predictions: "reports/classical_dt_pipeline_*/predictions.jsonl"}
+    - {name: j48, predictions: "reports/classical_j48_pipeline_*/predictions.jsonl"}
+    - {name: knn, predictions: "reports/classical_knn_pipeline_*/predictions.jsonl"}
+    - {name: svm, predictions: "reports/classical_svm_pipeline_*/predictions.jsonl"}
+    - {name: mlp, predictions: "reports/classical_mlp_pipeline_*/predictions.jsonl"}
+    - {name: naive_bayes, predictions: "reports/classical_nb_pipeline_*/predictions.jsonl"}
+    - {name: codebert, predictions: "reports/sequence_codebert_pipeline_*/predictions.jsonl"}
+    - {name: bilstm_attention, predictions: "reports/sequence_bilstm_pipeline_*/predictions.jsonl"}
+    - {name: cnn, predictions: "reports/sequence_cnn_pipeline_*/predictions.jsonl"}
+    - {name: gru, predictions: "reports/sequence_gru_pipeline_*/predictions.jsonl"}
+    - {name: bilstm, predictions: "reports/sequence_bilstm_plain_pipeline_*/predictions.jsonl"}
+    - {name: lstm, predictions: "reports/sequence_lstm_pipeline_*/predictions.jsonl"}
+    - {name: gcn, predictions: "reports/gnn_gcn_pipeline_*/predictions.jsonl"}
+    - {name: graphsage, predictions: "reports/gnn_graphsage_pipeline_*/predictions.jsonl"}
+    - {name: gat, predictions: "reports/gnn_gat_pipeline_*/predictions.jsonl"}
