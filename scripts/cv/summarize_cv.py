@@ -1,7 +1,8 @@
 """Summarise cross-validation records of any model family and compare them.
 
 Inputs are NAME=PATH pairs. Metrics are averaged over the folds of a seed, then over seeds.
---baseline adds paired comparisons with the corrected resampled t-test and Holm adjustment.
+--folds (or --test-train-ratio) adds the 95% interval of each mean, from the corrected resampled t
+statistic over the runs. --baseline adds paired comparisons with the same statistic and Holm adjustment.
 
 Usage:
     python scripts/cv/summarize_cv.py gnn=artifacts/reports/gnn_cv xgb=artifacts/tabular_cv/x \
@@ -45,6 +46,9 @@ def load_groups(
     """{group: {(strategy, seed, fold): {metric: value}}} and the label names of the records."""
     groups: dict[str, dict[tuple[str, int, int], dict[str, float]]] = {}
     labels: list[str] = []
+    # a folder given without a name: one group for each of its subfolders
+    specs = [pair for spec in specs for pair in ([spec] if "=" in spec else
+             [f"{sub.name}={sub}" for sub in sorted(Path(spec).iterdir()) if sub.is_dir()])]
     for spec in specs:
         name, raw = spec.split("=", 1)
         path = Path(raw)
@@ -127,7 +131,7 @@ def ratio_from_folds(path: Path, strategies: list[str] | None = None, tolerance:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("inputs", nargs="+", help="NAME=PATH")
+    parser.add_argument("inputs", nargs="+", help="NAME=PATH, or a folder with one subfolder for each group")
     parser.add_argument("--baseline", default=None,
                         help="group to compare against: full group key, or a NAME matching exactly one group")
     parser.add_argument("--strategy", default=None, help="keep only records of this split strategy")
@@ -151,13 +155,13 @@ def main() -> None:
             raise SystemExit(f"--baseline {args.baseline!r} matches {len(matches)} groups: {matches}")
         args.baseline = matches[0]
     ratio = args.test_train_ratio
-    if ratio is None and args.folds is not None and args.baseline is not None:
+    if ratio is None and args.folds is not None:
         used = sorted({st for cells in groups.values() for st, _, _ in cells})
         ratio = ratio_from_folds(args.folds, used, args.ratio_tolerance)
     if args.baseline is not None and ratio is None:
         raise SystemExit("--baseline needs --folds or --test-train-ratio")
     shorts = [label.removeprefix("is_") for label in labels]
-    keys = ([f"{s}_mcc" for s in shorts] + ["macro_mcc", "macro_pr_auc"] + [f"{s}_pr_auc" for s in shorts]
+    keys = ([f"{s}_mcc" for s in shorts] + ["macro_mcc", "macro_f1", "macro_pr_auc"] + [f"{s}_pr_auc" for s in shorts]
             + ["macro_roc_auc"] + [f"{s}_roc_auc" for s in shorts])
 
     rows = []
@@ -168,13 +172,21 @@ def main() -> None:
             means = seed_means(cells, key)
             row[f"{key}_mean"] = statistics.mean(means) if means else float("nan")
             row[f"{key}_std"] = statistics.pstdev(means) if len(means) > 1 else 0.0
+            if ratio is not None:
+                runs = np.array([values[key] for values in cells.values() if key in values])
+                row[f"{key}_ci95"] = corrected_ttest(runs, ratio)[2]
         rows.append(row)
 
-    print("| group | runs | " + " | ".join(f"{s} MCC" for s in shorts) + " | macro MCC | macro PR-AUC |")
-    print("|---|---|" + "---|" * (len(shorts) + 2))
+    def shown(row: dict[str, Any], key: str) -> str:
+        mean = row[f"{key}_mean"]
+        if ratio is None:
+            return f"{mean:.3f} ± {row[f'{key}_std']:.3f}"
+        return f"{mean:.3f} [{mean - row[f'{key}_ci95']:.3f}, {mean + row[f'{key}_ci95']:.3f}]"
+
+    print("| group | runs | " + " | ".join(f"{s} MCC" for s in shorts) + " | macro MCC | macro F1 | macro PR-AUC |")
+    print("|---|---|" + "---|" * (len(shorts) + 3))
     for row in rows:
-        cells = [f"{row[f'{k}_mean']:.3f} ± {row[f'{k}_std']:.3f}" for k in keys[: len(shorts) + 2]]
-        print(f"| {row['group']} | {row['runs']} | " + " | ".join(cells) + " |")
+        print(f"| {row['group']} | {row['runs']} | " + " | ".join(shown(row, k) for k in keys[: len(shorts) + 3]) + " |")
 
     comparisons = []
     if args.baseline is not None:
