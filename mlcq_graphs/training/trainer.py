@@ -30,11 +30,13 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch.optim import Optimizer
 from torch_geometric.loader import DataLoader
@@ -196,6 +198,9 @@ class Trainer:
         architecture: str = "gcn",
         loss_name: str = "weighted_bce",
         wandb_run: Any | None = None,
+        core_model: nn.Module | None = None,
+        rank: int = 0,
+        world: int = 1,
     ) -> None:
         if early_stopping_metric not in METRIC_KEY_MAP:
             raise ValueError(
@@ -218,6 +223,13 @@ class Trainer:
         self.architecture = architecture
         self.loss_name = loss_name
         self.wandb_run = wandb_run
+        # With DistributedDataParallel (world > 1, one process per GPU), `model` is the wrapper
+        # that runs the training steps and `core` the wrapped module. Rank 0 validates and
+        # writes the checkpoints with `core` and shares the validation scores, so every
+        # process takes the same early stopping decision.
+        self.core = core_model if core_model is not None else model
+        self.rank = rank
+        self.world = world
 
     # ------------------------------------------------------------------
     # Public API
@@ -279,26 +291,40 @@ class Trainer:
 
         for epoch in range(1, self.epochs + 1):
             train_loader = train_loader_fn(epoch)
-            avg_loss = self._train_one_epoch(train_loader, num_labels)
+            self._wait_for_gpu()
+            epoch_start = time.perf_counter()
+            avg_loss, train_steps, train_graphs = self._train_one_epoch(train_loader, num_labels)
+            self._wait_for_gpu()
+            train_sec = time.perf_counter() - epoch_start
 
-            val_metrics = evaluate_fn(
-                model=self.model,
-                loader=val_loader,
-                device=self.device,
-                num_labels=num_labels,
-                thresholds=None,
+            val_metrics: dict[str, Any] = {}
+            if self.rank == 0:
+                val_metrics = evaluate_fn(
+                    model=self.core,
+                    loader=val_loader,
+                    device=self.device,
+                    num_labels=num_labels,
+                    thresholds=None,
+                )
+            val_f1_micro, val_f1_macro, val_pr_auc_macro = self._share(
+                [float(val_metrics.get(key, 0.0)) for key in ("f1_micro", "f1_macro", "pr_auc_macro")]
             )
 
+            # train_sec covers the training steps only; train_steps counts the steps of one
+            # process and train_graphs the graphs of all processes
             entry: dict[str, float] = {
                 "epoch": float(epoch),
                 "train_loss": avg_loss,
-                "val_f1_micro": float(val_metrics["f1_micro"]),
-                "val_f1_macro": float(val_metrics["f1_macro"]),
-                "val_pr_auc_macro": float(val_metrics["pr_auc_macro"]),
+                "val_f1_micro": val_f1_micro,
+                "val_f1_macro": val_f1_macro,
+                "val_pr_auc_macro": val_pr_auc_macro,
+                "train_sec": train_sec,
+                "train_steps": float(train_steps),
+                "train_graphs": float(train_graphs),
             }
             history.append(entry)
 
-            if self.wandb_run is not None:
+            if self.wandb_run is not None and self.rank == 0:
                 wandb_payload: dict[str, float] = {
                     "epoch": epoch,
                     "train/loss": avg_loss,
@@ -313,23 +339,24 @@ class Trainer:
                         wandb_payload[f"val/f1_{name}"] = float(f1_per_label[i])
                 self.wandb_run.log(wandb_payload, step=epoch)
 
-            print(
-                f"Epoch {epoch:03d} | loss={avg_loss:.4f} | "
-                f"val_f1_micro={entry['val_f1_micro']:.4f} | "
-                f"val_f1_macro={entry['val_f1_macro']:.4f} | "
-                f"val_pr_auc={entry['val_pr_auc_macro']:.4f}"
-            )
+            if self.rank == 0:
+                print(
+                    f"Epoch {epoch:03d} | loss={avg_loss:.4f} | "
+                    f"val_f1_micro={entry['val_f1_micro']:.4f} | "
+                    f"val_f1_macro={entry['val_f1_macro']:.4f} | "
+                    f"val_pr_auc={entry['val_pr_auc_macro']:.4f}"
+                )
 
-            if epoch % 10 == 0 or epoch == 1:
-                f1_per_label = val_metrics.get("f1_per_label", [])
-                if f1_per_label:
-                    parts = [f"{v:.3f}" for v in f1_per_label]
-                    print(f"  per-label f1: {' | '.join(parts)}")
+                if epoch % 10 == 0 or epoch == 1:
+                    f1_per_label = val_metrics.get("f1_per_label", [])
+                    if f1_per_label:
+                        parts = [f"{v:.3f}" for v in f1_per_label]
+                        print(f"  per-label f1: {' | '.join(parts)}")
 
-            if entry["val_f1_macro"] < 0.05 and epoch > 5:
-                print(f"  [warn] val_f1_macro={entry['val_f1_macro']:.4f} very low -- possible label collapse")
+                if entry["val_f1_macro"] < 0.05 and epoch > 5:
+                    print(f"  [warn] val_f1_macro={entry['val_f1_macro']:.4f} very low -- possible label collapse")
 
-            val_metric = float(val_metrics[metric_key])
+            val_metric = {"f1_macro": val_f1_macro, "pr_auc_macro": val_pr_auc_macro}[metric_key]
             improved = (val_metric - best_metric) > self.min_delta
 
             if improved:
@@ -338,26 +365,28 @@ class Trainer:
                 no_improve = 0
                 # Keep CPU copy for fast restore at end of training.
                 best_state = {
-                    k: v.cpu().clone() for k, v in self.model.state_dict().items()
+                    k: v.cpu().clone() for k, v in self.core.state_dict().items()
                 }
-                _save_checkpoint(
-                    named_ckpt,
-                    self.model,
-                    epoch,
-                    val_metric,
-                    self.config_snapshot,
-                    history,
-                    self.seed,
-                )
-                shutil.copy2(named_ckpt, compat_ckpt)
+                if self.rank == 0:
+                    _save_checkpoint(
+                        named_ckpt,
+                        self.core,
+                        epoch,
+                        val_metric,
+                        self.config_snapshot,
+                        history,
+                        self.seed,
+                    )
+                    shutil.copy2(named_ckpt, compat_ckpt)
             else:
                 no_improve += 1
 
             if no_improve >= self.patience:
-                print(
-                    f"Early stopping at epoch {epoch} "
-                    f"(no improvement for {self.patience} epochs)"
-                )
+                if self.rank == 0:
+                    print(
+                        f"Early stopping at epoch {epoch} "
+                        f"(no improvement for {self.patience} epochs)"
+                    )
                 stopped_early = True
                 break
 
@@ -365,7 +394,7 @@ class Trainer:
         # The last epoch is not guaranteed to be the best epoch even when early
         # stopping was not triggered.
         if best_state is not None:
-            self.model.load_state_dict(
+            self.core.load_state_dict(
                 {k: v.to(self.device) for k, v in best_state.items()}
             )
 
@@ -381,12 +410,27 @@ class Trainer:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def _wait_for_gpu(self) -> None:
+        """Wait for the pending GPU work, so that the timers measure finished steps."""
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+
+    def _share(self, values: list[float]) -> list[float]:
+        """Give every process the values that rank 0 computed."""
+        if self.world == 1:
+            return values
+        tensor = torch.tensor(
+            values if self.rank == 0 else [0.0] * len(values), dtype=torch.float64, device=self.device
+        )
+        dist.all_reduce(tensor)
+        return [float(v) for v in tensor]
+
     def _train_one_epoch(
         self,
         loader: DataLoader,
         num_labels: int,
-    ) -> float:
-        """Run one training epoch and return the average loss per graph.
+    ) -> tuple[float, int, int]:
+        """Run one training epoch.
 
         Implements gradient accumulation and optional gradient clipping.
         Remaining gradients after the final batch are flushed even when the
@@ -397,7 +441,8 @@ class Trainer:
             num_labels: Number of label dimensions. Used to reshape batch.y.
 
         Returns:
-            Average loss per graph for this epoch.
+            Average loss per graph over all processes, number of steps of this process and
+            number of graphs over all processes.
         """
         self.model.train()
         total_loss: float = 0.0
@@ -438,4 +483,9 @@ class Trainer:
             self.optimizer.step()
             self.optimizer.zero_grad()
 
-        return total_loss / total_graphs if total_graphs > 0 else 0.0
+        if self.world > 1:
+            totals = torch.tensor([total_loss, float(total_graphs)], dtype=torch.float64, device=self.device)
+            dist.all_reduce(totals)
+            total_loss, total_graphs = float(totals[0]), int(totals[1])
+        avg_loss = total_loss / total_graphs if total_graphs > 0 else 0.0
+        return avg_loss, step_count, total_graphs

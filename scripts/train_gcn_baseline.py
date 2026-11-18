@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from sklearn.metrics import f1_score as sklearn_f1_score
 from sklearn.metrics import precision_recall_curve, roc_curve
 from torch import nn
@@ -101,10 +102,15 @@ class DynamicBudgetBatchSampler(Sampler[list[int]]):
         shuffle: bool,
         seed: int,
         drop_last: bool = False,
+        max_graphs: int | None = None,
+        rank: int = 0,
+        world: int = 1,
     ) -> None:
         super().__init__()
         if max_nodes <= 0:
             raise ValueError("max_nodes must be > 0")
+        if max_graphs is not None and max_graphs <= 0:
+            raise ValueError("max_graphs must be > 0")
 
         self.node_counts = node_counts
         self.edge_counts = edge_counts
@@ -113,6 +119,11 @@ class DynamicBudgetBatchSampler(Sampler[list[int]]):
         self.shuffle = shuffle
         self.seed = seed
         self.drop_last = drop_last
+        # max_graphs caps the graphs of a batch. With world > 1 (one process per GPU), rank r
+        # takes the graphs r, r + world, ... of the epoch order, so no graph is drawn twice.
+        self.max_graphs = max_graphs
+        self.rank = rank
+        self.world = world
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -128,11 +139,22 @@ class DynamicBudgetBatchSampler(Sampler[list[int]]):
         return [indices[i] for i in perm]
 
     def __iter__(self):
+        order = self._ordered_indices()
+        if self.world == 1:
+            yield from self._pack(order)
+            return
+        # every rank can compute the batches of the others: all of them stop at the shortest
+        # list, so each synchronised step has one batch per GPU
+        shards = [list(self._pack(order[r::self.world])) for r in range(self.world)]
+        steps = min(len(shard) for shard in shards)
+        yield from shards[self.rank][:steps]
+
+    def _pack(self, indices: list[int]):
         batch: list[int] = []
         batch_nodes = 0
         batch_edges = 0
 
-        for idx in self._ordered_indices():
+        for idx in indices:
             n_nodes = int(self.node_counts[idx])
             n_edges = int(self.edge_counts[idx])
 
@@ -156,8 +178,9 @@ class DynamicBudgetBatchSampler(Sampler[list[int]]):
             would_exceed_edges = (
                 self.max_edges is not None and batch_edges + n_edges > self.max_edges
             )
+            full = self.max_graphs is not None and len(batch) >= self.max_graphs
 
-            if batch and (would_exceed_nodes or would_exceed_edges):
+            if batch and (would_exceed_nodes or would_exceed_edges or full):
                 if not self.drop_last:
                     yield batch
                 batch = [idx]
@@ -962,6 +985,9 @@ def build_loader(
     epoch: int,
     num_workers: int,
     pin_memory: bool,
+    max_graphs: int | None = None,
+    rank: int = 0,
+    world: int = 1,
 ) -> DataLoader:
     node_counts = [int(d.num_nodes) for d in dataset]
     edge_counts = [int(d.edge_index.size(1)) for d in dataset]
@@ -972,6 +998,9 @@ def build_loader(
         max_edges=max_edges_per_batch,
         shuffle=shuffle,
         seed=seed,
+        max_graphs=max_graphs,
+        rank=rank,
+        world=world,
     )
     batch_sampler.set_epoch(epoch)
     return DataLoader(
@@ -1684,7 +1713,21 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
     seed = int(cfg.get("seed", 42))
     set_seed(seed)
 
+    # Under torchrun there is one process per GPU (DistributedDataParallel). Every process
+    # loads the data and builds the model. Rank 0 alone validates, tests and writes the files.
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    distributed = world > 1
+    if distributed:
+        dist.init_process_group(backend=str(cfg.get("dist_backend", "nccl")))
+        if rank != 0:
+            sys.stdout = open(os.devnull, "w")
+
     device = select_device(str(cfg.get("device", "auto")))
+    if distributed and device.type == "cuda":
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
     max_edges = int(cfg.get("max_edges_per_batch", 0))
     eval_max_edges = int(cfg.get("eval_max_edges_per_batch", 0))
     edge_budget = max_edges if max_edges > 0 else None
@@ -1705,7 +1748,12 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
     token_feature_dim = graphs.token_feature_dim
     token_feature_stats = graphs.token_feature_stats
 
+    # rank 0 writes the split file, the other processes read it afterwards
+    if distributed and rank != 0:
+        dist.barrier()
     train_ds, val_ds, test_ds, split_indices, split_path = split_graphs(cfg, dataset, seed, num_labels)
+    if distributed and rank == 0:
+        dist.barrier()
 
     # Learning curves: train on a stratified subset of the training part only,
     # validation and test parts unchanged (the saved split stays the full one).
@@ -1848,10 +1896,31 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         "hybrid": model_info.get("hybrid"),
         "seq_stats": seq_stats,
     }
-    (run_dir / "config.json").write_text(json.dumps(config_snapshot, indent=2, default=str))
+    if rank == 0:
+        (run_dir / "config.json").write_text(json.dumps(config_snapshot, indent=2, default=str))
+
+    train_model: nn.Module = model
+    if distributed:
+        # same initial weights on every GPU (same seed), then one random stream per process
+        torch.manual_seed(seed + rank)
+        train_model = nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank] if device.type == "cuda" else None
+        )
+
+    # batch_graphs is the number of graphs behind one optimizer step, over all GPUs:
+    # each of the `world` processes draws batch_graphs / world graphs per step.
+    # forward_graphs caps the graphs of one forward pass on a GPU. When a GPU has more graphs
+    # per step than this cap, it runs several forward passes and accumulates their gradients,
+    # so the memory of a pass and the graphs behind a step are the same for every GPU count.
+    batch_graphs = cfg.get("batch_graphs")
+    forward_graphs = cfg.get("forward_graphs")
+    graphs_per_gpu = max(1, int(batch_graphs) // world) if batch_graphs is not None else None
+    if graphs_per_gpu is not None and forward_graphs is not None and int(forward_graphs) < graphs_per_gpu:
+        grad_accum_steps = -(-graphs_per_gpu // int(forward_graphs))
+        graphs_per_gpu = int(forward_graphs)
 
     trainer = Trainer(
-        model=model,
+        model=train_model,
         optimizer=optimizer,
         loss_fn=loss_fn,
         device=device,
@@ -1867,6 +1936,9 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         architecture=architecture,
         loss_name=loss_name,
         wandb_run=wandb_run,
+        core_model=model,
+        rank=rank,
+        world=world,
     )
 
     max_nodes_per_batch = int(cfg.get("max_nodes_per_batch", 20000))
@@ -1884,6 +1956,9 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
             epoch=epoch,
             num_workers=num_workers,
             pin_memory=pin_memory,
+            max_graphs=graphs_per_gpu,
+            rank=rank,
+            world=world,
         )
 
     val_loader = build_loader(
@@ -1897,7 +1972,7 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         pin_memory=pin_memory,
     )
 
-    if torch.cuda.is_available():
+    if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
     train_start = time.perf_counter()
@@ -1908,7 +1983,17 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         evaluate_fn=evaluate,
     )
     train_duration_sec = time.perf_counter() - train_start
-    peak_gpu_bytes = torch.cuda.max_memory_allocated(device) if torch.cuda.is_available() else 0
+    peak_gpu_bytes = torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
+    peak_gpu_bytes_all = peak_gpu_bytes
+    if distributed:
+        peak = torch.tensor([float(peak_gpu_bytes)], dtype=torch.float64, device=device)
+        dist.all_reduce(peak, op=dist.ReduceOp.MAX)
+        peak_gpu_bytes_all = int(peak[0])
+        if rank != 0:
+            # the test evaluation and the result files belong to rank 0
+            dist.barrier()
+            dist.destroy_process_group()
+            return {}
 
     best_epoch = result.best_epoch
 
@@ -1978,6 +2063,13 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
 
     total_train_graphs = train_size_full * max(result.best_epoch, 1)
     train_throughput = total_train_graphs / max(train_duration_sec, 1e-9)
+
+    # Timers of the training steps alone (validation excluded). The first epoch holds the
+    # warm-up of the GPU, so the means skip it when the run has more than one epoch.
+    timed = result.history[1:] or result.history
+    timed_sec = sum(h["train_sec"] for h in timed)
+    timed_steps = sum(h["train_steps"] for h in timed)
+    timed_graphs = sum(h["train_graphs"] for h in timed)
 
     test_metrics_fixed = evaluate_full(
         logits=test_logits,
@@ -2084,6 +2176,17 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
             "avg_epoch_duration_sec": round(train_duration_sec / max(result.best_epoch, 1), 3),
             "peak_gpu_memory_bytes": peak_gpu_bytes,
             "peak_gpu_memory_mb": round(peak_gpu_bytes / 1024 ** 2, 2),
+            "peak_gpu_memory_mb_max_over_gpus": round(peak_gpu_bytes_all / 1024 ** 2, 2),
+            "world_size": world,
+            "gpu_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
+            "batch_graphs": batch_graphs,
+            "graphs_per_forward_pass": graphs_per_gpu,
+            "forward_passes_per_step": grad_accum_steps,
+            "epochs_run": len(result.history),
+            "epoch_train_sec_mean": round(timed_sec / max(len(timed), 1), 3),
+            "forward_pass_ms_mean": round(1000.0 * timed_sec / max(timed_steps, 1.0), 3),
+            "optimizer_step_ms_mean": round(1000.0 * timed_sec * grad_accum_steps / max(timed_steps, 1.0), 3),
+            "train_graphs_per_sec_mean": round(timed_graphs / max(timed_sec, 1e-9), 2),
             "train_throughput_graphs_per_sec": round(train_throughput, 2),
             "eval_throughput_graphs_per_sec": round(eval_throughput, 2),
             "eval_duration_sec": round(eval_duration_sec, 3),
@@ -2096,10 +2199,18 @@ def run_training(cfg: dict[str, Any], wandb_run: Any | None = None) -> dict[str,
         }
 
     (run_dir / "metrics.json").write_text(json.dumps(artifacts, indent=2))
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
     return artifacts
 
 
 def main() -> None:
+    # --config-json: the run_training() config written by the pipeline for a torchrun launch
+    if "--config-json" in sys.argv:
+        config_json = Path(sys.argv[sys.argv.index("--config-json") + 1])
+        run_training(json.loads(config_json.read_text()))
+        return
     args = parse_args()
 
     cfg: dict[str, Any] = {

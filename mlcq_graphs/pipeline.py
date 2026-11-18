@@ -1530,16 +1530,29 @@ class PipelineRunner:
         run_dir.mkdir(parents=True, exist_ok=True)
         Path(train_cfg["split_path"]).parent.mkdir(parents=True, exist_ok=True)
 
-        from scripts.train_gcn_baseline import run_training
+        # training.distributed.nproc_per_node > 1: one process per GPU through torchrun
+        dist_cfg = dict(config.get("training", {}).get("distributed", {}) or {})
+        nproc = int(dist_cfg.get("nproc_per_node", 1))
+        if nproc > 1:
+            run_json_path = run_dir / "run_config.json"
+            run_json_path.write_text(json.dumps(jsonable(train_cfg), indent=2))
+            cmd = [
+                sys.executable, "-m", "torch.distributed.run", "--standalone", f"--nproc_per_node={nproc}",
+                str(self.project_root / "scripts" / "train_gcn_baseline.py"),
+                "--config-json", str(run_json_path),
+            ]
+            self._run_command(cmd, print_commands=bool(run_cfg.get("print_commands", True)))
+        else:
+            from scripts.train_gcn_baseline import run_training
 
-        wandb_run = config.get("_wandb_run")
-        if bool(run_cfg.get("print_commands", True)):
-            print(
-                f"[train] in-process  architecture={train_cfg['architecture']} "
-                f"loss={train_cfg['loss']} seed={train_cfg['seed']}"
-            )
+            wandb_run = config.get("_wandb_run")
+            if bool(run_cfg.get("print_commands", True)):
+                print(
+                    f"[train] in-process  architecture={train_cfg['architecture']} "
+                    f"loss={train_cfg['loss']} seed={train_cfg['seed']}"
+                )
 
-        run_training(train_cfg, wandb_run=wandb_run)
+            run_training(train_cfg, wandb_run=wandb_run)
         self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
 
         return StageState(
@@ -1676,6 +1689,7 @@ class PipelineRunner:
         for key in (
             "hybrid_branch", "seq_max_tokens", "seq_min_freq", "seq_max_vocab", "seq_embed_dim",
             "seq_hidden_dim", "seq_num_layers", "seq_dropout", "seq_mask_padding", "train_target",
+            "batch_graphs", "forward_graphs", "dist_backend",
         ):
             if stage_cfg.get(key) is not None:
                 train_cfg[key] = stage_cfg[key]
@@ -1711,19 +1725,32 @@ class PipelineRunner:
         run_cfg = config.get("run", {})
         print_cmds = bool(run_cfg.get("print_commands", True))
         force = bool(run_cfg.get("force_rebuild", False)) or force_stage
+        # pretraining.val_corpus: a second corpus, used for validation only. With prepare_only
+        # the run stops once its graphs are built (CPU job before the GPU job).
+        val_cfg = dict(stage_cfg.get("val_corpus") or {})
+        if val_cfg and bool(val_cfg.get("prepare_only", False)):
+            self.prepare_pretraining_data(config, artifacts_root, force, corpus_key="val_corpus")
+            print("[pretraining] validation corpus ready")
+            raise SystemExit(0)
         data_out, data_fp = self.prepare_pretraining_data(config, artifacts_root, force)
-        return self._run_pretraining_model(config, artifacts_root, data_out, data_fp, force, print_cmds)
+        val_out = val_fp = None
+        if val_cfg:
+            val_out, val_fp = self.prepare_pretraining_data(config, artifacts_root, force, corpus_key="val_corpus")
+        return self._run_pretraining_model(
+            config, artifacts_root, data_out, data_fp, force, print_cmds, val_out, val_fp
+        )
 
     def prepare_pretraining_data(
         self,
         config: dict[str, Any],
         artifacts_root: Path,
         force: bool = False,
+        corpus_key: str = "corpus",
     ) -> tuple[dict[str, str], str]:
         """Build (or reuse) the corpus graphs and their PyG dataset."""
         stage_cfg = config.get("pretraining", {})
         run_cfg = config.get("run", {})
-        corpus_cfg = dict(stage_cfg.get("corpus", {}) or {})
+        corpus_cfg = dict(stage_cfg.get(corpus_key, {}) or {})
         print_cmds = bool(run_cfg.get("print_commands", True))
 
         input_dir = to_path(self.project_root, corpus_cfg["input_dir"])
@@ -1741,7 +1768,11 @@ class PipelineRunner:
             excluded |= {d for d in top_dirs if d.lower() in repo_names}
         excluded_list = sorted(excluded)
 
-        runtime_keys = {"workers", "chunksize", "progress_every"}
+        # corpus.shard {count, index}: parse one part of the files and stop, one job per part;
+        # with count and no index, merge the finished parts into the usual manifest
+        shard_cfg = dict(corpus_cfg.get("shard") or {})
+        shard_count = int(shard_cfg.get("count", 1))
+        runtime_keys = {"workers", "chunksize", "progress_every", "shard", "prepare_only"}
         corpus_fp_cfg = {k: v for k, v in corpus_cfg.items() if k not in runtime_keys}
         corpus_fp = stable_fingerprint(
             jsonable({"stage": "pretrain_corpus", "config": corpus_fp_cfg, "excluded": excluded_list})
@@ -1772,7 +1803,25 @@ class PipelineRunner:
                 cmd += ["--parser", str(corpus_cfg["parser"])]
             if bool(corpus_cfg.get("allow_parse_errors", False)):
                 cmd.append("--allow-parse-errors")
-            self._run_command(cmd, print_commands=print_cmds)
+            if shard_count > 1:
+                parts = [corpus_dir / f"manifest.part{i}of{shard_count}.jsonl" for i in range(shard_count)]
+                if shard_cfg.get("index") is not None:
+                    index = int(shard_cfg["index"])
+                    cmd[cmd.index("--manifest-path") + 1] = str(parts[index])
+                    cmd += ["--shard-index", str(index), "--shard-count", str(shard_count)]
+                    self._run_command(cmd, print_commands=print_cmds)
+                    parts[index].with_suffix(".done").write_text("")
+                    print(f"[pretraining] corpus part {index + 1}/{shard_count} done: {parts[index]}")
+                    raise SystemExit(0)
+                missing = [str(p) for p in parts if not p.with_suffix(".done").exists()]
+                if missing:
+                    raise ValueError(f"corpus parts not finished: {missing}")
+                # part i holds files i, i + count, ... so interleaving restores the order of a single run
+                rows = [p.read_text().splitlines() for p in parts]
+                merged = [part[k] for k in range(max(len(part) for part in rows)) for part in rows if k < len(part)]
+                Path(corpus_out["manifest_path"]).write_text("".join(line + "\n" for line in merged))
+            else:
+                self._run_command(cmd, print_commands=print_cmds)
             self._write_stage_meta(
                 stage_dir=corpus_dir,
                 payload={"stage": "pretrain_corpus", "config": corpus_cfg, "excluded_projects": excluded_list},
@@ -1820,11 +1869,12 @@ class PipelineRunner:
         config: dict[str, Any],
         data_out: dict[str, str],
         output_dir: Path,
+        val_out: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """The JSON consumed by scripts/pretraining/pretrain_ssl.py."""
         stage_cfg = config.get("pretraining", {})
         metadata = json.loads(Path(data_out["metadata_path"]).read_text())
-        return {
+        run_json = {
             **self._pretraining_model_cfg(stage_cfg),
             "device": stage_cfg.get("device", "auto"),
             "dataset_path": data_out["dataset_path"],
@@ -1832,12 +1882,18 @@ class PipelineRunner:
             "edge_type_order": metadata["edge_type_order"],
             "output_dir": str(output_dir),
         }
+        if val_out is not None:
+            val_metadata = json.loads(Path(val_out["metadata_path"]).read_text())
+            run_json["val_dataset_path"] = val_out["dataset_path"]
+            run_json["val_node_type_vocab_path"] = val_out["node_type_vocab_path"]
+            run_json["val_edge_type_order"] = val_metadata["edge_type_order"]
+        return run_json
 
     @staticmethod
     def _pretraining_model_cfg(stage_cfg: dict[str, Any]) -> dict[str, Any]:
         return {
             k: v for k, v in stage_cfg.items()
-            if k not in {"enabled", "corpus", "edge_types", "distributed", "device"}
+            if k not in {"enabled", "corpus", "val_corpus", "edge_types", "distributed", "device"}
         }
 
     def _run_pretraining_model(
@@ -1848,13 +1904,16 @@ class PipelineRunner:
         data_fp: str,
         force: bool,
         print_cmds: bool,
+        val_out: dict[str, str] | None = None,
+        val_fp: str | None = None,
     ) -> StageState:
         stage_cfg = config.get("pretraining", {})
         dist_cfg = dict(stage_cfg.get("distributed", {}) or {})
         model_cfg = self._pretraining_model_cfg(stage_cfg)
-        fingerprint = stable_fingerprint(
-            jsonable({"stage": "pretraining", "dataset": data_fp, "config": model_cfg})
-        )
+        fp_payload = {"stage": "pretraining", "dataset": data_fp, "config": model_cfg}
+        if val_fp is not None:
+            fp_payload["val_dataset"] = val_fp
+        fingerprint = stable_fingerprint(jsonable(fp_payload))
         stage_dir = artifacts_root / "cache" / "pretraining" / fingerprint
         outputs = {
             "encoder_path": str(stage_dir / "encoder_best.pt"),
@@ -1866,7 +1925,7 @@ class PipelineRunner:
             )
 
         stage_dir.mkdir(parents=True, exist_ok=True)
-        run_json = self.pretraining_run_config(config, data_out, stage_dir)
+        run_json = self.pretraining_run_config(config, data_out, stage_dir, val_out)
         run_json_path = stage_dir / "run_config.json"
         run_json_path.write_text(json.dumps(jsonable(run_json), indent=2))
 
