@@ -2341,8 +2341,10 @@ class PipelineRunner:
     ) -> None:
         stage_dir.mkdir(parents=True, exist_ok=True)
         meta_path = stage_dir / "stage_meta.json"
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.project_root, capture_output=True, text=True)
         meta = {
             "created_at": datetime.now().isoformat(),
+            "commit": commit.stdout.strip() or None,
             "payload": jsonable(payload),
             "outputs": jsonable(outputs),
         }
