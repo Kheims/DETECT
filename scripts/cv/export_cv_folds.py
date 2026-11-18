@@ -1,6 +1,7 @@
 """Export the GNN cross-validation folds as indices into the normalized JSON.
 
 Lets models without graphs use the same train, validation and test parts as the GNN.
+The pipeline builds the same parts in its folds stage (build_cv_folds below).
 
 Usage:
     python scripts/cv/export_cv_folds.py --config config/experiments/gnn_cv.yml \
@@ -40,6 +41,11 @@ def build_cv_folds(
     val_ratio: float,
     num_labels: int,
 ) -> list[dict[str, Any]]:
+    """Train, validation and test parts of every (strategy, seed, fold) as indices into the normalized JSON.
+
+    The parts come from split_kfold, the splitter of the GNN runs, applied to the snippets in the
+    order of json_index (the order of the GNN dataset).
+    """
     dataset = [Data(y=torch.as_tensor(y).view(-1).int(), num_nodes=1) for y in labels]
     splits = []
     for strategy in strategies:

@@ -39,7 +39,7 @@ for model in lstm bilstm bilstm_plain gru cnn codebert; do
 done
 ```
 
-Tokenizes code with a regex splitter (vocab 10k, max length 512), trains with focal loss and early stopping. CodeBERT uses its own subword tokenizer. GPU recommended.
+Reads each snippet as consecutive 512-token chunks (at most 3, 8 for CodeBERT), with a regex tokenizer (vocabulary of the training part, 10k) or the CodeBERT subword tokenizer. Each config runs 10 seeds x 5 folds on the shared folds of the folds stage, the same train, validation and test parts as the GNN runs. Focal loss and early stopping on the validation macro F1, BCE and early stopping on the validation average precision for CodeBERT. GPU recommended: CodeBERT takes about 3 h per seed on a V100.
 
 ### GNN (3 architectures)
 
@@ -62,8 +62,8 @@ Any YAML key can be overridden from the command line. The pipeline re-runs only 
 ```bash
 # Larger hidden layer, fewer seeds
 uv run python main.py --config config/experiments/sequence_lstm_pipeline.yml \
-  '--training.model_params.hidden_dim=256' \
-  '--training.seeds=[42,43]'
+  '--training.hidden_dim=512' \
+  '--ablation.seeds=[42,43]'
 
 # Custom hyperparameter grid
 uv run python main.py --config config/experiments/classical_xgboost_pipeline.yml \
@@ -91,7 +91,9 @@ Config files inherit from `config/defaults.yml`.
 
 **AST construction** -- ANTLR Java 8 grammar parses each snippet into a syntax tree with 202 node types. Exports as DOT, converted to PyTorch Geometric Data objects.
 
-**Training** -- Dispatches based on `training.used_method` (classical, sequence, gnn, codebert). Multi-seed evaluation, per-label threshold tuning, focal loss for DL models.
+**Folds** -- Train, validation and test parts of every (seed, fold), built once over the snippets that have an AST with the splitter of the GNN runs. 10 seeds x 5 stratified folds by default. The sequence models read them, so every family is tested on the same snippets.
+
+**Training** -- Dispatches based on `training.used_method` (classical, sequence, chunked_sequence, gnn, codebert). Multi-seed evaluation, per-label threshold tuning, focal loss for DL models.
 
 **Caching** -- SHA-256 fingerprint per stage. Unchanged stages are skipped across runs.
 
@@ -125,6 +127,7 @@ scripts/
   build_pyg_dataset_from_dot.py     # DOT to PyG
   train_classical.py                # sklearn training
   train_sequence.py                 # PyTorch sequence training
+  train_chunked_sequence.py         # sequence models and CodeBERT on 512-token chunks, shared folds
   train_codebert.py                 # CodeBERT fine-tuning
   train_gcn_baseline.py             # GNN training, run by the pipeline
   train_gcn_baseline.slurm          # cluster job for the GNN training

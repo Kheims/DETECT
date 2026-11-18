@@ -1,5 +1,8 @@
 _include_yml: ../defaults.yml
 
+# Fine-tuned CodeBERT on the shared folds (folds stage): each snippet is read as consecutive
+# 512-token chunks, at most 8, then 10 seeds x 5 folds.
+#   uv run python main.py --config config/experiments/sequence_codebert_pipeline.yml
 run:
   name: sequence_codebert_pipeline
   artifacts_root: artifacts
