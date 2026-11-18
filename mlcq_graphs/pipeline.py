@@ -189,6 +189,8 @@ class PipelineRunner:
                 ),
             )
             stages["normalization"] = normalization_state
+            # the next stages read the labels of this stage in place of construction.input_json
+            config.setdefault("construction", {})["input_json"] = normalization_state.outputs["normalized_json_path"]
 
         construction_state = None
         if bool(config.get("construction", {}).get("enabled", True)):
