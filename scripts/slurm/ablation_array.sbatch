@@ -19,7 +19,7 @@ PROCS="${PROCS:-1}"
 COUNT=$((SLURM_ARRAY_TASK_COUNT * PROCS))
 IFS=',' read -r -a GPUS <<< "${CUDA_VISIBLE_DEVICES:-0}"
 echo "host=$(hostname) config=$CONFIG task=$SLURM_ARRAY_TASK_ID/$SLURM_ARRAY_TASK_COUNT procs=$PROCS gpus=${GPUS[*]} start=$(date -Is)"
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 if [[ "${PREPARE:-0}" == "1" ]]; then
   "$PYTHON" main.py --config "$CONFIG" --ablation.enabled=false --training.enabled=false "$@" \
