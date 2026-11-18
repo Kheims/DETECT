@@ -92,9 +92,24 @@ def cut_units(
     return out
 
 
-def load_units(cfg: dict[str, Any], vocab: dict[str, int], log) -> list[Data]:
-    raw = torch.load(cfg["dataset_path"], weights_only=False)
-    edge_order = list(cfg["edge_type_order"])
+def load_units(
+    dataset_path: str,
+    edge_order: list[str],
+    cfg: dict[str, Any],
+    vocab: dict[str, int],
+    log,
+    source_vocab: dict[str, int] | None = None,
+    unk_token: int = 0,
+) -> list[Data]:
+    """Cut the graphs of one dataset into units. `source_vocab` is the vocabulary of a dataset
+    built apart from the training corpus: its type ids are mapped to those of `vocab` by name."""
+    raw = torch.load(dataset_path, weights_only=False)
+    remap = None
+    if source_vocab is not None:
+        remap = torch.full((max(source_vocab.values()) + 1,), unk_token, dtype=torch.long)
+        for name, idx in source_vocab.items():
+            if name in vocab:
+                remap[idx] = vocab[name]
     child_ids = {edge_order.index("Child")}
     units_cfg = cfg.get("units", {}) or {}
     unit_names = [str(t) for t in units_cfg.get("node_types", [])]
@@ -106,20 +121,26 @@ def load_units(cfg: dict[str, Any], vocab: dict[str, int], log) -> list[Data]:
     units: list[Data] = []
     for data in raw:
         data.type_id = data.type_id.view(-1).long()
+        if remap is not None:
+            data.type_id = remap[data.type_id]
         for unit in cut_units(data, child_ids, unit_ids, keep_file, min_nodes, max_nodes):
             unit.edge_index = to_undirected(unit.edge_index, num_nodes=unit.num_nodes)
             units.append(unit)
-    log(f"[pretrain] files={len(raw)} units={len(units)} unit_types={unit_names} keep_file={keep_file}")
+    log(f"[pretrain] {dataset_path}: files={len(raw)} units={len(units)} unit_types={unit_names} "
+        f"keep_file={keep_file}")
     return units
 
 
-def budget_batches(indices: list[int], sizes: list[int], max_nodes: int) -> list[list[int]]:
+def budget_batches(
+    indices: list[int], sizes: list[int], max_nodes: int, max_graphs: int | None = None
+) -> list[list[int]]:
+    """Consecutive batches of at most `max_nodes` nodes and, when set, `max_graphs` graphs."""
     batches: list[list[int]] = []
     current: list[int] = []
     used = 0
     for idx in indices:
         n = sizes[idx]
-        if current and used + n > max_nodes:
+        if current and (used + n > max_nodes or (max_graphs is not None and len(current) >= max_graphs)):
             batches.append(current)
             current, used = [], 0
         current.append(idx)
@@ -272,13 +293,34 @@ def main() -> None:
     num_types = len(vocab)
     mask_token = num_types          # MASK id
     unk_token = num_types + 1       # id for MLCQ types unseen in the corpus
-    units = load_units(cfg, vocab, log)
-    sizes = [u.num_nodes for u in units]
-
+    units = load_units(cfg["dataset_path"], list(cfg["edge_type_order"]), cfg, vocab, log)
     order = list(range(len(units)))
     random.Random(seed).shuffle(order)
-    n_val = max(1, int(float(cfg.get("val_fraction", 0.02)) * len(order)))
-    val_idx, train_idx = order[:n_val], order[n_val:]
+    if cfg.get("val_dataset_path"):
+        # validation on the projects of another corpus, none of them in the training corpus
+        val_units = load_units(
+            cfg["val_dataset_path"],
+            list(cfg.get("val_edge_type_order") or cfg["edge_type_order"]),
+            cfg,
+            vocab,
+            log,
+            source_vocab=json.loads(Path(cfg["val_node_type_vocab_path"]).read_text()),
+            unk_token=unk_token,
+        )
+        train_idx = order
+        val_idx = list(range(len(units), len(units) + len(val_units)))
+        random.Random(seed).shuffle(val_idx)
+        units = units + val_units
+        val_source = "val_corpus"
+    else:
+        n_val = max(1, int(float(cfg.get("val_fraction", 0.02)) * len(order)))
+        val_idx, train_idx = order[:n_val], order[n_val:]
+        val_source = "random_fraction"
+    sizes = [u.num_nodes for u in units]
+    # fixed sample of training units, scored in evaluation mode after each epoch: it separates
+    # a gap between training and evaluation mode from a gap between training and validation units
+    n_probe = min(int(cfg.get("train_eval_units", 0)), len(train_idx))
+    probe_idx = random.Random(seed + 1).sample(train_idx, n_probe) if n_probe > 0 else []
 
     objectives = cfg.get("objectives", {}) or {}
     mt_cfg = objectives.get("masked_type", {}) or {}
@@ -322,8 +364,12 @@ def main() -> None:
     max_steps = cfg.get("max_steps_per_epoch")
     # weak scaling keeps the per-GPU node budget, strong scaling splits a global one
     budget = int(cfg.get("max_nodes_per_batch", 20000))
+    graph_cap = cfg.get("max_graphs_per_batch")
+    graph_cap = int(graph_cap) if graph_cap is not None else None
     if str(cfg.get("batch_scaling", "weak")) == "strong":
         budget = max(1, budget // world)
+        if graph_cap is not None:
+            graph_cap = max(1, graph_cap // world)
     gen = torch.Generator(device=device).manual_seed(seed + rank)
 
     def run_epoch(epoch: int, indices: list[int], train: bool) -> dict[str, float]:
@@ -331,7 +377,8 @@ def main() -> None:
         idx = list(indices)
         if train:
             rng.shuffle(idx)
-        batches = budget_batches(idx[rank::world], sizes, budget)
+        # the cap on graphs applies to training steps only
+        batches = budget_batches(idx[rank::world], sizes, budget, graph_cap if train else None)
         steps = torch.tensor(len(batches), device=device)
         if distributed:
             dist.all_reduce(steps, op=dist.ReduceOp.MIN)
@@ -353,8 +400,11 @@ def main() -> None:
                         int(mt_cfg.get("max_subtree_nodes", 64)),
                         gen,
                     )
+                    # types unknown to the training vocabulary are inputs only, never targets
+                    known = batch.type_id < num_types
+                    mask &= known
                     if not mask.any():
-                        mask[0] = True
+                        mask[int(torch.nonzero(known)[0])] = True
                     masked = batch.clone()
                     masked.type_id = torch.where(mask, torch.full_like(batch.type_id, mask_token), batch.type_id)
                 v1 = v2 = None
@@ -398,10 +448,11 @@ def main() -> None:
 
     history: list[dict[str, Any]] = []
     best_val = math.inf
+    keep_epochs = {int(e) for e in cfg.get("checkpoint_epochs") or []}
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     log(f"[pretrain] world={world} device={device} train_units={len(train_idx)} val_units={len(val_idx)} "
-        f"budget_per_gpu={budget} objectives={objectives}")
+        f"val_source={val_source} budget_per_gpu={budget} graphs_per_gpu={graph_cap} objectives={objectives}")
     total_start = time.perf_counter()
     for epoch in range(1, epochs + 1):
         if device.type == "cuda":
@@ -420,11 +471,18 @@ def main() -> None:
             "train": train_stats,
             "val": val_stats,
         }
+        if probe_idx:
+            row["train_eval"] = run_epoch(0, probe_idx, train=False)
         history.append(row)
         log(json.dumps(row))
         if rank == 0 and val_stats["loss"] < best_val:
             best_val = val_stats["loss"]
             save_checkpoint(out_dir / "encoder_best.pt", core, cfg, vocab, epoch, val_stats, mask_token, unk_token)
+        # checkpoint_epochs: encoders kept at given epochs, to compare short and long pre-training
+        if rank == 0 and epoch in keep_epochs:
+            save_checkpoint(
+                out_dir / f"encoder_epoch{epoch}.pt", core, cfg, vocab, epoch, val_stats, mask_token, unk_token
+            )
 
     total_sec = time.perf_counter() - total_start
     if rank == 0:
@@ -435,6 +493,8 @@ def main() -> None:
             "device": str(device),
             "gpu_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
             "budget_per_gpu": budget,
+            "graphs_per_gpu": graph_cap,
+            "val_source": val_source,
             "batch_scaling": str(cfg.get("batch_scaling", "weak")),
             "units_train": len(train_idx),
             "units_val": len(val_idx),

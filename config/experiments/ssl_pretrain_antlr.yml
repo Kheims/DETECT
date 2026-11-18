@@ -1,0 +1,93 @@
+_include_yml: ../defaults.yml
+
+# Self-supervised pre-training of the GATv2 encoder on code2seq java-small, on the ANTLR Java 8
+# graphs of the other experiments (MLCQ projects excluded from the corpus).
+# The corpus is parsed in parts, one CPU job per part, then merged by the first full run:
+#   CONFIG=config/experiments/ssl_pretrain_antlr.yml sbatch --array=0-5 scripts/slurm/pretrain_corpus_parts.sbatch
+#   uv run python main.py --config config/experiments/ssl_pretrain_antlr.yml '--pretraining.corpus.shard.count=6'
+run:
+  name: ssl_pretrain_antlr
+
+pretraining:
+  enabled: true
+  device: auto
+  corpus:
+    input_dir: data/pretrain/raw/java-small/training
+    parser: antlr
+    exclude_mlcq_projects: true
+    exclude_projects: []
+    max_file_bytes: 100000
+    limit: null
+    sample_seed: 0
+    workers: 16
+    chunksize: 1
+    progress_every: 1000
+  edge_types: [Child, NextToken]
+  # graphs are cut into method and class units to match MLCQ snippets (ANTLR rule names)
+  units:
+    node_types: [methodDeclaration, constructorDeclaration, classDeclaration]
+    keep_file: false
+    min_nodes: 20
+    max_nodes: 15000
+  architecture: gat
+  hidden_dim: 512
+  num_layers: 3
+  type_emb_dim: 128
+  dropout: 0.2
+  objectives:
+    masked_type:
+      weight: 1.0
+      mask_ratio: 0.15
+      mask_mode: subtree
+      max_subtree_nodes: 64
+  epochs: 10
+  max_steps_per_epoch: null
+  lr: 0.001
+  weight_decay: 0.00001
+  grad_clip_norm: 1.0
+  # nodes per GPU and step; the GAT fine-tuning on MLCQ peaks at 20.9 GB with 30,000
+  max_nodes_per_batch: 30000
+  batch_scaling: weak
+  val_fraction: 0.02
+  seed: 0
+  dist_backend: nccl
+  distributed:
+    nproc_per_node: 4
+
+# Fine-tuning on MLCQ from the pre-trained encoder: same GATv2 and node type inputs as the encoder,
+# split of the shared folds (kfold, seed and fold set per run)
+construction:
+  workers: 32
+
+dataset:
+  edge_types: [Child, NextToken]
+
+token_encoder:
+  enabled: false
+
+training:
+  architecture: gat
+  num_layers: 3
+  hidden_dim: 512
+  type_emb_dim: 128
+  dropout: 0.2
+  feature_mode: type_only
+  loss: focal
+  lr: 0.0005
+  weight_decay: 0.00005
+  epochs: 40
+  patience: 10
+  max_nodes_per_batch: 40000
+  eval_max_nodes_per_batch: 80000
+  gat_max_nodes_per_batch: 30000
+  split_strategy: kfold
+  split_group_key: repo_url
+  cv_folds: 5
+  val_ratio: 0.1
+  cv_fold: 0
+  seed: 42
+  save_predictions: true
+  device: auto
+  init_from_pretraining: true
+  pretrained_checkpoint: encoder_best.pt
+  freeze_encoder: false

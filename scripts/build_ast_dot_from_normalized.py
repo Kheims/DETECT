@@ -579,8 +579,14 @@ def run_from_dir(args: argparse.Namespace) -> dict[str, Any]:
         # random subset instead of the first files in path order (one project)
         random.Random(args.sample_seed).shuffle(java_files)
     subset = java_files if args.limit is None else java_files[: args.limit]
+    selected = len(subset)
+    if not 0 <= args.shard_index < args.shard_count:
+        raise ValueError("--shard-index must be in [0, --shard-count)")
+    # one part of the selected files, every shard_count-th one, so that the parts can run in parallel
+    subset = subset[args.shard_index::args.shard_count]
     print(
-        f"[from-dir] candidates={len(java_files)} selected={len(subset)} "
+        f"[from-dir] candidates={len(java_files)} selected={selected} "
+        f"part={args.shard_index + 1}/{args.shard_count} files_in_part={len(subset)} "
         f"excluded_top_dirs={sorted(excluded_dirs)} max_file_bytes={args.max_file_bytes}",
         flush=True,
     )
@@ -759,6 +765,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="Comma separated top-level directories (projects) to skip.",
+    )
+    dir_parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help="Split the selected files into this many parts (every shard-count-th file).",
+    )
+    dir_parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="Part to process, in [0, --shard-count).",
     )
     dir_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files.")
     dir_parser.add_argument(
