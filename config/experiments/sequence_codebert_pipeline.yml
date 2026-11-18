@@ -7,6 +7,9 @@ run:
   name: sequence_codebert_pipeline
   artifacts_root: artifacts
 
+normalization:
+  enabled: true
+
 construction:
   enabled: true
 
