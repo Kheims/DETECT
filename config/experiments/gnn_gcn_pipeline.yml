@@ -1,0 +1,46 @@
+_include_yml: ../defaults.yml
+
+# GCN on the AST graphs, on the shared folds: 10 seeds x 5 folds. Best GCN of the ablation:
+# Child and NextToken edges, Word2Vec tokens, node types only, focal loss.
+#   uv run python main.py --config config/experiments/gnn_gcn_pipeline.yml
+run:
+  name: gnn_gcn_pipeline
+  artifacts_root: artifacts
+
+normalization:
+  enabled: true
+
+dataset:
+  edge_types: [Child, NextToken]
+
+token_encoder:
+  enabled: true
+
+training:
+  architecture: gcn
+  num_layers: 3
+  hidden_dim: 512
+  type_emb_dim: 128
+  dropout: 0.2
+  feature_mode: type_only
+  loss: focal
+  lr: 0.0005
+  weight_decay: 0.00005
+  epochs: 40
+  patience: 10
+  max_nodes_per_batch: 40000
+  eval_max_nodes_per_batch: 80000
+  gat_max_nodes_per_batch: 30000
+  split_strategy: kfold
+  split_group_key: repo_url
+  cv_folds: 5
+  val_ratio: 0.1
+  save_predictions: true
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  grid:
+    training.architecture: [gcn]
+    training.loss: [focal]
+    training.cv_fold: [0, 1, 2, 3, 4]

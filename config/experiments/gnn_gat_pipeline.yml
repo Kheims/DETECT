@@ -1,0 +1,13 @@
+_include_yml: gnn_gcn_pipeline.yml
+
+# GAT on the shared folds, same graphs and settings as the GCN.
+#   uv run python main.py --config config/experiments/gnn_gat_pipeline.yml
+run:
+  name: gnn_gat_pipeline
+
+training:
+  architecture: gat
+
+ablation:
+  grid:
+    training.architecture: [gat]

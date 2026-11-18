@@ -1,0 +1,20 @@
+_include_yml: gnn_gcn_pipeline.yml
+
+# GraphSAGE on the shared folds. Best GraphSAGE of the ablation: Child edges, node types and
+# numeric features, weighted BCE.
+#   uv run python main.py --config config/experiments/gnn_graphsage_pipeline.yml
+run:
+  name: gnn_graphsage_pipeline
+
+dataset:
+  edge_types: [Child]
+
+training:
+  architecture: graphsage
+  feature_mode: type_numeric
+  loss: weighted_bce
+
+ablation:
+  grid:
+    training.architecture: [graphsage]
+    training.loss: [weighted_bce]
