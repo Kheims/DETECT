@@ -707,6 +707,11 @@ class PipelineRunner:
 
         records_path.write_text(json.dumps(jsonable(records), indent=2))
         summary_path.write_text(json.dumps(jsonable(summary_rows), indent=2))
+        trial_predictions = [Path(record["run_dir"]) / "predictions.jsonl" for record in records]
+        if all(path.exists() for path in trial_predictions):
+            with (report_dir / "predictions.jsonl").open("w") as fh:
+                for path in trial_predictions:
+                    fh.write(path.read_text())
 
         summary_extended_doc = {
             "summary": jsonable(summary_extended_rows),
