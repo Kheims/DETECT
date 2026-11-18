@@ -21,6 +21,8 @@ Requires Python 3.13+, Java 17+ (for DesigniteJava) and [uv](https://docs.astral
 
 Each experiment is one command. The pipeline caches intermediate stages so only the first run per family pays the full cost.
 
+The 17 models share one protocol: the same snippets (those with an AST), the same folds (10 seeds x 5 stratified folds, written once by the folds stage), a grid or an early stopping decided on the validation part, and one threshold per smell tuned on the validation part.
+
 ### Classical ML (8 models)
 
 ```bash
@@ -29,7 +31,7 @@ for model in rf svm xgboost dt knn j48 mlp nb; do
 done
 ```
 
-Extracts 21 OO metrics via DesigniteJava, trains with 5-fold stratified CV, grid search and per-label threshold tuning.
+Extracts 21 OO metrics via DesigniteJava. Each run fits every point of the grid on the training part and keeps the one with the best PR-AUC on the validation part.
 
 ### Sequence DL (6 models)
 
@@ -44,10 +46,42 @@ Reads each snippet as consecutive 512-token chunks (at most 3, 8 for CodeBERT), 
 ### GNN (3 architectures)
 
 ```bash
-uv run python main.py --config config/experiments/gcn_baseline.yml
+for model in gcn gat graphsage; do
+  uv run python main.py --config config/experiments/gnn_${model}_pipeline.yml
+done
 ```
 
-Parses each snippet into an AST with ANTLR Java 8, builds PyTorch Geometric graphs with Child edges and 69-dim node features, trains with focal loss. Supports GCN, GAT, GraphSAGE via ablation config.
+Parses each snippet into an AST with ANTLR Java 8 and builds PyTorch Geometric graphs. Each config holds the best setting of its architecture: Child and NextToken edges with focal loss for GCN and GAT, Child edges with weighted BCE for GraphSAGE.
+
+### Scores of the 17 models
+
+```bash
+uv run python scripts/cv/eval_eligible.py --config config/experiments/benchmark.yml
+uv run python scripts/cv/summarize_cv.py artifacts/benchmark \
+  --folds artifacts/cache/folds/<fingerprint>/folds.json --baseline codebert
+```
+
+Each smell is scored on the snippets of its level: methods for Feature Envy and Long Method, classes for Blob and Data Class. The summary gives the mean MCC of each model over the 50 runs with its 95% interval, and the paired differences with the baseline (corrected resampled t-test).
+
+### Other labels, other snippets
+
+The labels come from the normalization stage, so one override changes them for the three families. Give each series its own artifacts folder.
+
+```bash
+# Madeyski DS2: major and critical only
+uv run python main.py --config config/experiments/gnn_gcn_pipeline.yml \
+  --run.artifacts_root=artifacts/ds2 --normalization.rule=ds2
+
+# positive when more than half of the reviews see the smell
+uv run python main.py --config config/experiments/gnn_gcn_pipeline.yml \
+  --run.artifacts_root=artifacts/majority --normalization.method=majority
+
+# the complete dataset: 4,770 snippets (data/mlcq_complete, built by scripts/data/build_mlcq_complete.py)
+uv run python main.py --config config/experiments/gnn_gcn_pipeline.yml \
+  --run.artifacts_root=artifacts/complete --normalization.input_json=data/mlcq_complete/MLCQCodeSmellSamples.json
+```
+
+On a Slurm cluster, `scripts/slurm/submit_benchmark.sh <artifacts folder> [overrides]` submits the 17 models of a series.
 
 ### Generate figures
 
@@ -70,10 +104,6 @@ uv run python main.py --config config/experiments/classical_xgboost_pipeline.yml
   '--training.param_grid.n_estimators=[50,100,500]' \
   '--training.param_grid.max_depth=[3,5,10]'
 
-# Switch binarization to Madeyski DS2 (major and critical only)
-uv run python main.py --config config/experiments/classical_rf_pipeline.yml \
-  '--normalization.rule=madeyskiDS2'
-
 # Force rebuild (ignore cache)
 uv run python main.py --config config/experiments/classical_rf_pipeline.yml \
   '--run.force_rebuild=true'
@@ -83,7 +113,7 @@ Config files inherit from `config/defaults.yml`.
 
 ## Pipeline stages
 
-**Normalization** -- Aggregates multi-reviewer annotations into binary labels. Default: median severity, positive if severity > none. Configurable rules (default, madeyskiDS1, madeyskiDS2).
+**Normalization** -- Aggregates multi-reviewer annotations into binary labels. Default: median severity, positive if severity > none. Configurable aggregation (median, majority, max) and rules (default, ds1, ds2). When enabled, every later stage reads its labels.
 
 **Metric extraction** -- DesigniteJava extracts 11 type-level metrics (NOF, NOM, WMC, DIT, LCOM, FANIN, FANOUT, ...) and 3 method-level metrics (LOC, CC, PC) aggregated by max/sum/avg plus method count. 21 features total.
 

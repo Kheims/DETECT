@@ -41,7 +41,7 @@ changed run again.
 
 Outputs go to `artifacts/`. Studies outside the main pipeline live in
 `scripts/<topic>/`: cv, data, labels, llm, analysis, pretraining, xai and slurm.
-Each of these scripts starts with a docstring that gives the command to run it.
+The command that runs a script or a config is in the README or at the top of the config.
 
 ## Common tasks
 
