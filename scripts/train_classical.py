@@ -15,6 +15,7 @@ import os
 import json
 import csv
 import itertools
+import time
 import numpy as np
 from pathlib import Path
 
@@ -22,9 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import f1_score, matthews_corrcoef, precision_recall_curve, precision_score, recall_score, roc_auc_score, auc
+from sklearn.metrics import average_precision_score, f1_score, matthews_corrcoef, precision_recall_curve, precision_score, recall_score, roc_auc_score, auc
 
 from mlcq_graphs.config import load_config, parse_cli_overrides
+from mlcq_graphs.evaluation import cv
+from mlcq_graphs.evaluation.metrics import compute_full_metrics
 from mlcq_graphs.models.classical import build_classical_model
 
 LABEL_NAMES = ["is_feature_envy", "is_long_method", "is_blob", "is_data_class"]
@@ -361,6 +364,74 @@ def run_classical(
 
     save_data["results_path"] = results_path
     return save_data
+
+
+def positive_proba(model, X):
+    return np.column_stack([est.predict_proba(X)[:, 1] for est in model.estimators_])
+
+
+def macro_pr_auc(y, proba):
+    """Mean PR-AUC over the labels that have both classes in y."""
+    scores = [average_precision_score(y[:, i], proba[:, i]) for i in range(y.shape[1]) if 0 < y[:, i].sum() < len(y)]
+    return float(np.mean(scores)) if scores else -np.inf
+
+
+def run_classical_fold(training_cfg, metrics_csv, input_json, folds_json, output_dir):
+    """One (seed, fold) of the shared folds.
+
+    Every point of the grid is fitted on the training part. The point with the best macro PR-AUC on
+    the validation part gives the thresholds (validation) and the scores (test).
+    """
+    seed, fold_id = int(training_cfg["seed"]), int(training_cfg["cv_fold"])
+    model_name = training_cfg.get("model", "random_forest")
+    fold = next(cv.iter_folds(cv.load_folds(Path(folds_json)), ["kfold"], [seed], [fold_id]))
+    parts = {p: getattr(fold, p) for p in ("train", "val", "test")}
+    entries = json.loads(Path(input_json).read_text())
+    Y = {p: cv.label_matrix_from_json(entries, idx, len(LABEL_NAMES)) for p, idx in parts.items()}
+
+    with open(metrics_csv) as fh:
+        rows = list(csv.DictReader(fh))
+    features = [k for k in rows[0] if k not in ("sample_idx", "sample_id", "y_fe", "y_lm", "y_blob", "y_dc")]
+    table = {int(float(r["sample_idx"])): [float(r[k]) for k in features] for r in rows}
+    # a snippet without metrics takes the medians of the training part
+    X = {p: np.array([table.get(int(i), [np.nan] * len(features)) for i in idx]) for p, idx in parts.items()}
+    medians = np.nan_to_num(np.nanmedian(X["train"], axis=0))
+    X = {p: np.where(np.isnan(x), medians, x) for p, x in X.items()}
+    scaler = StandardScaler().fit(X["train"])
+    X = {p: scaler.transform(x) for p, x in X.items()}
+
+    started = time.perf_counter()
+    best_score, best_params, best_model = -np.inf, None, None
+    for params in expand_param_grid(training_cfg.get("param_grid")):
+        model = build_classical_model(model_name, {**training_cfg.get("model_params", {}), **params, "seed": seed})
+        model.fit(X["train"], Y["train"])
+        score = macro_pr_auc(Y["val"], positive_proba(model, X["val"]))
+        if best_model is None or score > best_score:
+            best_score, best_params, best_model = score, params, model
+    seconds = time.perf_counter() - started
+
+    proba = {p: positive_proba(best_model, X[p]) for p in ("val", "test")}
+    thresholds = cv.tune_thresholds(Y["val"], proba["val"], int(training_cfg.get("threshold_steps", 101)))
+    metrics = {
+        "best_epoch": -1,
+        "selected_params": best_params,
+        "val_pr_auc_macro": best_score,
+        "thresholds": [float(t) for t in thresholds],
+        "test_tuned": compute_full_metrics(Y["test"], (proba["test"] >= thresholds).astype(int), proba["test"], LABEL_NAMES),
+        "test_fixed_0_5": compute_full_metrics(Y["test"], (proba["test"] >= 0.5).astype(int), proba["test"], LABEL_NAMES),
+        "profiling": {"train_duration_sec": seconds},
+    }
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    cv.write_jsonl(out / "predictions.jsonl", [
+        row for p in ("val", "test")
+        for row in cv.prediction_rows(model=model_name, strategy="kfold", seed=seed, fold=fold_id, part=p,
+                                      indices=parts[p], y=Y[p], probs=proba[p])
+    ])
+    (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    print(f"[classical] {model_name} seed={seed} fold={fold_id} selected={best_params} "
+          f"mcc_macro={metrics['test_tuned']['mcc_macro']:.4f} seconds={seconds:.0f}", flush=True)
+    return metrics
 
 
 def main():

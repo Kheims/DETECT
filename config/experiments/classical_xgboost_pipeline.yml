@@ -1,5 +1,8 @@
 _include_yml: ../defaults.yml
 
+# XGBoost on the 21 DesigniteJava metrics, on the shared folds (folds stage): 10 seeds x 5 folds.
+# Each run keeps the grid point with the best PR-AUC on the validation part.
+#   uv run python main.py --config config/experiments/classical_xgboost_pipeline.yml
 run:
   name: classical_xgboost_pipeline
   artifacts_root: artifacts
@@ -11,7 +14,10 @@ normalization:
   rule: default
 
 construction:
-  enabled: false
+  enabled: true
+
+folds:
+  enabled: true
 
 metric_extraction:
   enabled: true
@@ -32,10 +38,6 @@ training:
   enabled: true
   used_method: classical
   model: xgboost
-  cross_validation: true
-  n_folds: 5
-  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
-  threshold_tuning: true
   model_params:
     n_estimators: 100
     max_depth: 5
@@ -44,3 +46,12 @@ training:
     n_estimators: [100, 200]
     max_depth: [3, 5, 7]
     lr: [0.05, 0.1]
+
+ablation:
+  enabled: true
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  grid:
+    # null drops the GNN keys of the defaults grid
+    training.architecture: null
+    training.loss: null
+    training.cv_fold: [0, 1, 2, 3, 4]

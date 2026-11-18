@@ -1464,6 +1464,7 @@ class PipelineRunner:
                 config=config,
                 artifacts_root=artifacts_root,
                 metric_extraction_state=metric_extraction_state,
+                folds_state=folds_state,
                 force_stage=force_stage,
             )
         if used_method == "sequence":
@@ -1886,14 +1887,20 @@ class PipelineRunner:
         config: dict[str, Any],
         artifacts_root: Path,
         metric_extraction_state: StageState | None,
+        folds_state: StageState | None,
         force_stage: bool,
     ) -> StageState:
-        """Dispatch for training.used_method=classical."""
+        """Dispatch for training.used_method=classical.
+
+        With the folds stage, one (seed, fold) of the shared folds. Without it, the cross-validation of
+        scripts/train_classical.py over all the seeds.
+        """
         if metric_extraction_state is None:
             raise ValueError("Classical training requires metric_extraction stage output")
 
         stage_cfg = config.get("training", {})
         run_cfg = config.get("run", {})
+        model_name = str(stage_cfg.get("model", "random_forest"))
 
         payload = {
             "stage": "training",
@@ -1901,14 +1908,16 @@ class PipelineRunner:
             "config": stage_cfg,
             "metric_extraction_fingerprint": metric_extraction_state.fingerprint,
         }
+        if folds_state is not None:
+            payload["folds"] = folds_state.fingerprint
         fingerprint = stable_fingerprint(jsonable(payload))
-        runs_root = artifacts_root / "runs"
-        run_dir = runs_root / fingerprint
-        model_name = str(stage_cfg.get("model", "random_forest"))
-        outputs = {
-            "run_dir": str(run_dir),
-            "results_path": str(run_dir / f"{model_name}_results.json"),
-        }
+        run_dir = artifacts_root / "runs" / fingerprint
+        outputs = {"run_dir": str(run_dir)}
+        if folds_state is not None:
+            outputs["metrics_path"] = str(run_dir / "metrics.json")
+            outputs["predictions_path"] = str(run_dir / "predictions.jsonl")
+        else:
+            outputs["results_path"] = str(run_dir / f"{model_name}_results.json")
 
         if self._can_reuse(
             run_dir,
@@ -1924,17 +1933,21 @@ class PipelineRunner:
             )
 
         run_dir.mkdir(parents=True, exist_ok=True)
-        from scripts.train_classical import run_classical
+        from scripts.train_classical import run_classical, run_classical_fold
 
-        if bool(run_cfg.get("print_commands", True)):
-            seeds = stage_cfg.get("seeds", [])
-            print(f"[train] classical in-process  model={model_name} seeds={len(seeds)}")
-
-        run_classical(
-            training_cfg=stage_cfg,
-            metrics_csv=metric_extraction_state.outputs["metrics_csv_path"],
-            output_dir=str(run_dir),
-        )
+        metrics_csv = metric_extraction_state.outputs["metrics_csv_path"]
+        if folds_state is not None:
+            run_classical_fold(
+                training_cfg=stage_cfg,
+                metrics_csv=metrics_csv,
+                input_json=to_path(self.project_root, config["construction"]["input_json"]),
+                folds_json=folds_state.outputs["folds_json"],
+                output_dir=run_dir,
+            )
+        else:
+            if bool(run_cfg.get("print_commands", True)):
+                print(f"[train] classical in-process  model={model_name} seeds={len(stage_cfg.get('seeds', []))}")
+            run_classical(training_cfg=stage_cfg, metrics_csv=metrics_csv, output_dir=str(run_dir))
 
         self._write_stage_meta(stage_dir=run_dir, payload=payload, outputs=outputs)
         return StageState(
