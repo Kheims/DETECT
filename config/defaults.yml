@@ -12,7 +12,7 @@ run:
 
 # Reviews of each snippet reduced to one label per smell (scripts/NormalizeFromJson.py).
 # When enabled, every later stage reads these labels in place of construction.input_json.
-#   method: median | majority | max     rule: default | ds1 | ds2 | madeyskiDS1 | madeyskiDS2
+#   method: median | majority | max | min     rule: default | ds1 | ds2 | madeyskiDS1 | madeyskiDS2
 normalization:
   enabled: false
   input_json: data/MLCQCodeSmellSamples.json

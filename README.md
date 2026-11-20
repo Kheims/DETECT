@@ -151,7 +151,7 @@ Config files inherit from `config/defaults.yml`.
 
 ## Pipeline stages
 
-**Normalization** -- Aggregates multi-reviewer annotations into binary labels. Default: median severity, positive if severity > none. Configurable aggregation (median, majority, max) and rules (default, ds1, ds2). When enabled, every later stage reads its labels.
+**Normalization** -- Aggregates multi-reviewer annotations into binary labels. Default: median severity, positive if severity > none. Configurable aggregation (median, majority, max, min) and rules (default, ds1, ds2). When enabled, every later stage reads its labels.
 
 **Metric extraction** -- DesigniteJava extracts 11 type-level metrics (NOF, NOM, WMC, DIT, LCOM, FANIN, FANOUT, ...) and 3 method-level metrics (LOC, CC, PC) aggregated by max/sum/avg plus method count. 21 features total.
 

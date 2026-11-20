@@ -1,7 +1,7 @@
 """Normalize MLCQ raw reviews into per-sample aggregated labels.
 
 Aggregates multiple reviewer severities per (sample, smell) pair into a single
-median / max / majority severity, then applies a binarization rule to produce
+median / max / min / majority severity, then applies a binarization rule to produce
 the multi-label y vector in the canonical order [fe, lm, blob, dc].
 
 The tie-breaking rule for median aggregation matches Madeyski and Lewowski
@@ -54,6 +54,8 @@ def aggregate_severity(severities: list[str], method: str = "median") -> str:
 
     if method == "max":
         score = max(scores)
+    elif method == "min":
+        score = min(scores)
     elif method == "majority":
         present_votes = sum(s > 0 for s in scores)
         absent_votes = len(scores) - present_votes
@@ -183,7 +185,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--method",
-        choices=["median", "max", "majority"],
+        choices=["median", "max", "min", "majority"],
         default="median",
         help="Severity aggregation method across reviews of the same sample",
     )
