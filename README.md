@@ -65,23 +65,61 @@ Each smell is scored on the snippets of its level: methods for Feature Envy and 
 
 ### Other labels, other snippets
 
-The labels come from the normalization stage, so one override changes them for the three families. Give each series its own artifacts folder.
+The labels come from the normalization stage, so one override changes them for the three families. Give each series its own artifacts folder. The thesis reports six series:
+
+| Folder | Labels | Snippets | Overrides |
+|---|---|---|---|
+| `artifacts/ds1_4367` | DS1: median severity above none | 4,367 | none |
+| `artifacts/ds1_4770` | DS1 | 4,770 | `--normalization.input_json=data/mlcq_complete/MLCQCodeSmellSamples.json` |
+| `artifacts/majority_4367` | positive when more than half of the reviews see the smell | 4,367 | `--normalization.method=majority` |
+| `artifacts/majority_4770` | majority | 4,770 | both overrides above |
+| `artifacts/ds2_4367` | Madeyski DS2: major and critical only | 4,367 | `--normalization.rule=ds2` |
+| `artifacts/ds2_4770` | DS2 | 4,770 | `--normalization.rule=ds2` and the input override |
+
+`data/mlcq_complete` holds the complete dataset, rebuilt by `scripts/data/build_mlcq_complete.py`. One series is the 17 configs with the same folder and overrides, then the two scoring commands:
 
 ```bash
-# Madeyski DS2: major and critical only
-uv run python main.py --config config/experiments/gnn_gcn_pipeline.yml \
-  --run.artifacts_root=artifacts/ds2 --normalization.rule=ds2
-
-# positive when more than half of the reviews see the smell
-uv run python main.py --config config/experiments/gnn_gcn_pipeline.yml \
-  --run.artifacts_root=artifacts/majority --normalization.method=majority
-
-# the complete dataset: 4,770 snippets (data/mlcq_complete, built by scripts/data/build_mlcq_complete.py)
-uv run python main.py --config config/experiments/gnn_gcn_pipeline.yml \
-  --run.artifacts_root=artifacts/complete --normalization.input_json=data/mlcq_complete/MLCQCodeSmellSamples.json
+ROOT=artifacts/ds2_4770
+OPTS="--normalization.rule=ds2 --normalization.input_json=data/mlcq_complete/MLCQCodeSmellSamples.json"
+for config in config/experiments/{classical,sequence,gnn}_*_pipeline.yml; do
+  uv run python main.py --config $config --run.artifacts_root=$ROOT $OPTS
+done
+uv run python scripts/cv/eval_eligible.py --config config/experiments/benchmark.yml --eligible_eval.root=$ROOT \
+  --eligible_eval.input_json=$(ls $ROOT/cache/normalization/*/normalized*.json)
+uv run python scripts/cv/summarize_cv.py $ROOT/benchmark \
+  --folds $(ls $ROOT/cache/folds/*/folds.json) --baseline codebert
 ```
 
-On a Slurm cluster, `scripts/slurm/submit_benchmark.sh <artifacts folder> [overrides]` submits the 17 models of a series.
+On a Slurm cluster, `scripts/slurm/submit_benchmark.sh $ROOT $OPTS` submits the same 17 models as job arrays.
+
+### Ablation of the graph models
+
+```bash
+uv run python main.py --config config/experiments/gnn_ablation.yml
+```
+
+48 graph models (3 architectures x 2 losses x 2 edge sets x 2 node feature sets x Word2Vec tokens or not) on the five folds of seed 42. On Slurm: `PROCS=1 scripts/slurm/submit_ablation.sh config/experiments/gnn_ablation.yml 10`.
+
+### Pre-training and several GPUs
+
+The GATv2 encoder is pre-trained on the java-small corpus of code2seq, unpacked in `data/pretrain/raw/java-small`, then the classifier is trained on MLCQ from random weights and from the pre-trained encoder, on 1, 2 and 4 GPUs. Each job file is a wrapper around `main.py`:
+
+```bash
+P=config/experiments/ssl_pretrain_methods.yml
+F=config/experiments/ssl_finetune.yml
+R=--run.artifacts_root=artifacts/ssl
+# training corpus in 6 parts and validation corpus, on CPU
+CONFIG=config/experiments/ssl_pretrain_antlr.yml sbatch --array=0-5 scripts/slurm/pretrain_corpus_parts.sbatch $R
+CONFIG=$P sbatch scripts/slurm/ssl_val_corpus.sbatch $R
+# pre-training on 4 GPUs, then five seeds of the five training runs
+CONFIG=$P sbatch --gres=gpu:4 scripts/slurm/ssl_pretrain.sbatch $R --pretraining.corpus.shard.count=6
+CONFIG=$F sbatch --gres=gpu:4 --array=0-4%1 scripts/slurm/ssl_finetune_scaling.sbatch $R --pretraining.corpus.shard.count=6
+uv run python scripts/pretraining/finetune_summary.py --artifacts artifacts/ssl
+```
+
+### What a run leaves
+
+In its artifacts folder: `resolved_config.yml`, `cache/<stage>/<fingerprint>/` with the output of each stage and a `stage_meta.json` (config, date, commit), `runs/<fingerprint>/` for each training, and `reports/<config>_<timestamp>/` with `records.json` (one record per training), `summary.csv` and `predictions.jsonl`. `eval_eligible.py` adds `benchmark/<model>/records.json`.
 
 ### Generate figures
 
