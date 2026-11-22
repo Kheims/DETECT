@@ -5,6 +5,7 @@ authors:
   - family-names: Mesbah
     given-names: Djamel
 repository-code: "https://github.com/Kheims/DETECT"
+license: MIT
 preferred-citation:
   type: article
   title: "A survey on code smells detection using machine learning techniques"

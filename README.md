@@ -220,6 +220,10 @@ data/                               # MLCQ, raw and normalized
 artifacts/                          # outputs, not in the repository
 ```
 
+## Licence
+
+The code of DETECT is under the MIT licence (`LICENSE`). The data and the tools below keep their own licence.
+
 ## Data and third-party material
 
 - `data/MLCQCodeSmellSamples.json` and `data/mlcq_complete/` come from MLCQ (Madeyski and Lewowski, EASE 2020, doi:10.1145/3383219.3383264), distributed under CC BY 4.0. The code snippets belong to the open-source projects listed in the dataset and keep the licence of their project. `data/mlcq_complete/provenance.csv` says where each snippet was read.
