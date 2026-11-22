@@ -166,7 +166,26 @@ results/             # records, folds and summaries of our runs
 
 ## Pre-training
 
-We also ran self-supervised pre-training experiments with a GNN encoder. They can be found in the branch [`pretraining`](https://github.com/Kheims/DETECT/tree/pretraining).
+This branch adds self-supervised pre-training experiments with a GNN encoder to `main`. The GATv2 encoder is pre-trained on the java-small corpus of code2seq, unpacked in `data/pretrain/raw/java-small`. The classifier is then trained on MLCQ from random weights and from the pre-trained encoder, on 1, 2 and 4 GPUs with DistributedDataParallel. Each job file is a wrapper around `main.py`:
+
+```bash
+P=config/experiments/ssl_pretrain_methods.yml
+F=config/experiments/ssl_finetune.yml
+R=--run.artifacts_root=artifacts/ssl
+# training corpus in 6 parts and validation corpus, on CPU
+CONFIG=config/experiments/ssl_pretrain_antlr.yml sbatch --array=0-5 scripts/slurm/pretrain_corpus_parts.sbatch $R
+CONFIG=$P sbatch scripts/slurm/ssl_val_corpus.sbatch $R
+# pre-training on 4 GPUs, then five seeds of the five training runs
+CONFIG=$P sbatch --gres=gpu:4 scripts/slurm/ssl_pretrain.sbatch $R --pretraining.corpus.shard.count=6
+CONFIG=$F sbatch --gres=gpu:4 --array=0-4%1 scripts/slurm/ssl_finetune_scaling.sbatch $R --pretraining.corpus.shard.count=6
+uv run python scripts/pretraining/finetune_summary.py --artifacts artifacts/ssl
+```
+
+`results/pretraining/runs/<fingerprint>/` holds the configuration, the metrics and the training curves of our 25 training runs on MLCQ: five settings (random weights, two pre-trained encoders on 1 GPU, the pre-trained encoder on 2 and 4 GPUs) with five seeds each. The command below rebuilds `results/pretraining/summary.txt` from these files, except its last column, which comes from the GPU logs of the jobs:
+
+```bash
+uv run python scripts/pretraining/finetune_summary.py --artifacts results/pretraining
+```
 
 ## Licence
 

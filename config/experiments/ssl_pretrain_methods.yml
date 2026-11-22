@@ -1,0 +1,47 @@
+_include_yml: ssl_pretrain_antlr.yml
+
+# Pre-training on method graphs: 15 % of the node types masked one by one, 50 epochs, batches of 64 graphs, learning rate 0.001, dropout 0.2,
+# validation on the validation project of java-small. The training corpus is the one of
+# ssl_pretrain_antlr.yml (same graphs, same cache).
+# The validation corpus is parsed first, on CPU:
+#   main.py --config config/experiments/ssl_pretrain_methods.yml --pretraining.val_corpus.prepare_only=true
+run:
+  name: ssl_pretrain_methods
+
+pretraining:
+  val_corpus:
+    input_dir: data/pretrain/raw/java-small/validation
+    parser: antlr
+    exclude_mlcq_projects: false
+    exclude_projects: []
+    max_file_bytes: 100000
+    limit: null
+    sample_seed: 0
+    workers: 16
+    chunksize: 1
+    progress_every: 200
+  units:
+    node_types: [methodDeclaration]
+    keep_file: false
+    min_nodes: 1
+    max_nodes: 15000
+  objectives:
+    masked_type:
+      weight: 1.0
+      mask_ratio: 0.15
+      mask_mode: node
+  epochs: 50
+  lr: 0.001
+  dropout: 0.2
+  # 64 graphs per step over all GPUs (16 on each of 4); the node budget only guards the memory
+  max_graphs_per_batch: 64
+  max_nodes_per_batch: 120000
+  batch_scaling: strong
+  # training units scored in evaluation mode after each epoch
+  train_eval_units: 10000
+  # encoders kept besides the last one
+  checkpoint_epochs: [1, 5, 10, 25]
+
+training:
+  # the text gives a number of epochs and no selection on the validation loss
+  pretrained_checkpoint: encoder_last.pt

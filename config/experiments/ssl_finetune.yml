@@ -1,0 +1,19 @@
+_include_yml: ssl_pretrain_methods.yml
+
+# Supervised training of the GATv2 classifier on MLCQ, from the pre-trained encoder
+# or from random weights, on 1, 2 or 4 GPUs. One optimizer step uses 32 graphs over all GPUs
+# (32, 16 or 8 graphs per GPU). 32 graphs do not fit in the 32 GB of one V100,
+# so a forward pass holds 8 graphs and a GPU accumulates the gradients of 4, 2 or 1 passes.
+#   from random weights:  --pretraining.enabled=false --training.init_from_pretraining=false
+#   GPUs:                 --training.distributed.nproc_per_node=4
+#   seed:                 --training.seed=42
+run:
+  name: ssl_finetune
+
+training:
+  batch_graphs: 32
+  forward_graphs: 8
+  # memory guard of a forward pass: the largest graph has 98,881 nodes
+  gat_max_nodes_per_batch: 100000
+  distributed:
+    nproc_per_node: 1
