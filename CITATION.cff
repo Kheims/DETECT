@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the article below."
+title: "DETECT: DEsign defecT Evaluation and Classification Toolkit"
+authors:
+  - family-names: Mesbah
+    given-names: Djamel
+repository-code: "https://github.com/Kheims/DETECT"
+preferred-citation:
+  type: article
+  title: "A survey on code smells detection using machine learning techniques"
+  authors:
+    - family-names: Mesbah
+      given-names: Djamel
+    - family-names: El Madhoun
+      given-names: Nour
+    - family-names: Al Agha
+      given-names: Khaldoun
+    - family-names: Zouaoui
+      given-names: Anis
+  journal: "Information and Software Technology"
+  volume: 198
+  start: 108242
+  year: 2026
+  doi: "10.1016/j.infsof.2026.108242"

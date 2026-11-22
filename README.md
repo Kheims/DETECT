@@ -4,7 +4,7 @@
 
 A unified pipeline that evaluates classical ML, sequence DL and graph neural network models under identical preprocessing, label definitions and evaluation protocols. Three model families, one entry point, YAML-driven configuration.
 
-Currently supports the [MLCQ](https://zenodo.org/records/3666840) dataset. Integration of [DaCoSX](https://zenodo.org/records/7570428) and support for alternative binarization protocols (Madeyski DS1/DS2) are ongoing.
+The experiments use the [MLCQ](https://zenodo.org/records/3666840) dataset, with three label rules: DS1 and DS2 of Madeyski and Lewowski, and a strict majority of the reviews.
 
 ![Pipeline overview](docs/diagrams/pipeline_overview.svg)
 
@@ -15,7 +15,7 @@ git clone https://github.com/Kheims/DETECT.git && cd DETECT
 uv sync
 ```
 
-Requires Python 3.13+, Java 17+ (for DesigniteJava) and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.13+, Java 17+ (for DesigniteJava) and [uv](https://docs.astral.sh/uv/). Java 17 or later must be the first `java` in `PATH`: DesigniteJava stops with `UnsupportedClassVersionError` under Java 8. The CodeBERT runs download `microsoft/codebert-base` from the Hugging Face Hub at the first run. On a machine without network, point `HF_HOME` to a cache that already holds it.
 
 ## Reproducing the paper results
 
@@ -220,4 +220,12 @@ data/                               # MLCQ, raw and normalized
 artifacts/                          # outputs, not in the repository
 ```
 
+## Data and third-party material
 
+- `data/MLCQCodeSmellSamples.json` and `data/mlcq_complete/` come from MLCQ (Madeyski and Lewowski, EASE 2020, doi:10.1145/3383219.3383264), distributed under CC BY 4.0. The code snippets belong to the open-source projects listed in the dataset and keep the licence of their project. `data/mlcq_complete/provenance.csv` says where each snippet was read.
+- `tools/designite.jar` is DesigniteJava 1.1.2, built from https://github.com/tushartushar/DesigniteJava (Apache License 2.0).
+- `tools/antlr/` holds the Java 8 grammar of the ANTLR grammars-v4 project (BSD licence, in the header of the grammar files) and the parser generated from it.
+
+## Citation
+
+Mesbah, D., El Madhoun, N., Al Agha, K. and Zouaoui, A. A survey on code smells detection using machine learning techniques. Information and Software Technology 198, 108242 (2026). doi:10.1016/j.infsof.2026.108242
