@@ -4,7 +4,7 @@ Eligibility comes from the sample level (MLCQ) or from per-label 0/1 columns (DA
 Thresholds are re-tuned on the eligible validation samples. Records keep the cv.build_record schema.
 
 Usage:
-    python scripts/cv/eval_eligible.py --config config/experiments/shortcut_baselines.yml
+    python scripts/cv/eval_eligible.py --config config/experiments/benchmark.yml
     python scripts/cv/eval_eligible.py --config ... --input name=path/to/predictions.jsonl
 """
 from __future__ import annotations

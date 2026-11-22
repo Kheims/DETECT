@@ -3,7 +3,7 @@
 Supports multi-seed runs with post-training threshold tuning per label.
 
 Usage:
-    python scripts/train_sequence.py --config config/experiments/bilstm_tokens.yml
+    python scripts/train_sequence.py --config <config with training.used_method: sequence>
 """
 
 import sys

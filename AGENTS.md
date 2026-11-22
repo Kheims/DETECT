@@ -19,7 +19,7 @@ unchanged. Do not modify, rename or refactor:
 - `mlcq_graphs/` (pipeline, models, training, evaluation)
 - the scripts at the root of `scripts/`, which the pipeline calls
 - `config/defaults.yml` and the existing experiment configs
-- `data/`, `tools/` and `prompts/`
+- `data/` and `tools/`
 
 Add new code next to it instead (see below). If the user asks for a change in
 these files, tell them that their results will no longer be comparable with the
@@ -39,9 +39,9 @@ changed run again.
 4. Evaluation. Per-label threshold tuning, then F1, MCC and PR-AUC over several
    seeds.
 
-Outputs go to `artifacts/`. Studies outside the main pipeline live in
-`scripts/<topic>/`: cv, data, labels, llm, analysis, pretraining, xai and slurm.
-The command that runs a script or a config is in the README or at the top of the config.
+Outputs go to `artifacts/`. The scripts around the pipeline live in
+`scripts/<topic>/`: cv (scores and summaries), data (MLCQ extraction)
+and slurm. The command that runs a script or a config is in the README.
 
 ## Common tasks
 
@@ -57,9 +57,10 @@ The command that runs a script or a config is in the README or at the top of the
   `BaseGraphClassifier` decorated with `@register_model("name")`, import it in
   `mlcq_graphs/models/__init__.py` (the only edit allowed there), then select
   it with `'--training.architecture=name'`.
-- Compare several detectors on the same samples: use the shared
-  cross-validation protocol (`config/experiments/gnn_cv.yml`,
-  `config/experiments/tabular_cv.yml`, then `scripts/cv/summarize_cv.py`).
+- Compare several detectors on the same samples: run their configs in the same
+  artifacts folder, so they share the folds of the folds stage, then
+  `scripts/cv/eval_eligible.py` and `scripts/cv/summarize_cv.py` (README,
+  section "Scores of the 17 models").
 - Tables and figures:
   `uv run python scripts/report_runs.py --artifacts-root artifacts`.
 
@@ -70,5 +71,5 @@ The command that runs a script or a config is in the README or at the top of the
 - Warn the user before long GPU runs.
 - Never present a number that no run produced. To compare with the survey,
   quote the tables of the survey.
-- Run the tests after any change:
-  `uv run python -m unittest discover -s tests`.
+- After any change, run one config from end to end, for example
+  `uv run python main.py --config config/experiments/classical_dt_pipeline.yml`.

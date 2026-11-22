@@ -7,7 +7,7 @@ Supports:
 - Reports mean ± std across runs
 
 Usage:
-    python scripts/train_classical.py --config config/experiments/rf_metrics.yml
+    python main.py --config config/experiments/classical_rf_pipeline.yml
 """
 
 import sys
