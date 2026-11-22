@@ -1,0 +1,14 @@
+{
+  "created_at": "2026-11-20T22:36:41.586259",
+  "commit": "fe190c29625af5f15525e0983dd37ae377ef9373",
+  "payload": {
+    "stage": "normalization",
+    "method": "median",
+    "rule": "default",
+    "input_hint": "64250109:1795019879",
+    "input_path": "/mnt/beegfs/projects/code_smells_detection/detect/data/mlcq_complete/MLCQCodeSmellSamples.json"
+  },
+  "outputs": {
+    "normalized_json_path": "/mnt/beegfs/projects/code_smells_detection/detect/artifacts/ds1_4770/cache/normalization/e248ab78bbec7adf531e1b3f13083e9dc17ebce16a125b9d31ddab419a6264b7/normalized.default.json"
+  }
+}

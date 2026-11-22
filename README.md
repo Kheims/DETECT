@@ -121,6 +121,10 @@ uv run python scripts/pretraining/finetune_summary.py --artifacts artifacts/ssl
 
 In its artifacts folder: `resolved_config.yml`, `cache/<stage>/<fingerprint>/` with the output of each stage and a `stage_meta.json` (config, date, commit), `runs/<fingerprint>/` for each training, and `reports/<config>_<timestamp>/` with `records.json` (one record per training), `summary.csv` and `predictions.jsonl`. `eval_eligible.py` adds `benchmark/<model>/records.json`.
 
+### Results of the thesis
+
+`results/` holds the records, the folds and the summaries of the runs behind the tables of the thesis, copied from the artifacts folders by `scripts/collect_results.sh`. `results/README.md` says which file gives which table.
+
 ### Generate figures
 
 ```bash
@@ -218,6 +222,7 @@ tools/
 docs/                               # pipeline diagram
 data/                               # MLCQ, raw and normalized
 artifacts/                          # outputs, not in the repository
+results/                            # records, folds and summaries of the thesis runs
 ```
 
 ## Licence
