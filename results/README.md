@@ -12,6 +12,7 @@ One folder per series, a series being one label rule on one set of snippets (see
 | `ds1_4770` | DS1 | 4,770 |
 | `ds2_4367` | DS2 | 4,367 |
 | `ds2_4770` | DS2 | 4,770 |
+| `majority_4367` | strict majority of the reviews | 4,367 |
 
 Each folder holds:
 
