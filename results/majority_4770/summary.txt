@@ -1,0 +1,101 @@
+| group | runs | feature_envy MCC | long_method MCC | blob MCC | data_class MCC | macro MCC | macro F1 | macro PR-AUC |
+|---|---|---|---|---|---|---|---|---|
+| bilstm {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.107 [0.016, 0.198] | 0.512 [0.340, 0.683] | 0.316 [0.231, 0.402] | 0.351 [0.279, 0.422] | 0.321 [0.258, 0.385] | 0.372 [0.315, 0.428] | 0.368 [0.310, 0.426] |
+| bilstm_attention {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.180 [0.064, 0.297] | 0.693 [0.643, 0.742] | 0.391 [0.319, 0.463] | 0.502 [0.447, 0.556] | 0.441 [0.399, 0.483] | 0.479 [0.440, 0.518] | 0.501 [0.466, 0.536] |
+| cnn {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.087 [0.011, 0.163] | 0.557 [0.486, 0.628] | 0.376 [0.310, 0.441] | 0.514 [0.454, 0.575] | 0.384 [0.352, 0.415] | 0.427 [0.396, 0.457] | 0.450 [0.418, 0.483] |
+| codebert {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.201 [0.090, 0.311] | 0.713 [0.661, 0.766] | 0.418 [0.344, 0.493] | 0.566 [0.506, 0.626] | 0.475 [0.438, 0.512] | 0.511 [0.478, 0.543] | 0.531 [0.499, 0.563] |
+| decision_tree {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.115 [0.018, 0.212] | 0.675 [0.626, 0.723] | 0.399 [0.336, 0.462] | 0.384 [0.321, 0.447] | 0.393 [0.353, 0.433] | 0.436 [0.402, 0.470] | 0.378 [0.348, 0.407] |
+| gat {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.190 [0.101, 0.279] | 0.668 [0.611, 0.726] | 0.422 [0.351, 0.493] | 0.516 [0.457, 0.574] | 0.449 [0.417, 0.481] | 0.486 [0.456, 0.517] | 0.509 [0.476, 0.543] |
+| gcn {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.214 [0.120, 0.308] | 0.686 [0.639, 0.733] | 0.436 [0.377, 0.496] | 0.518 [0.461, 0.575] | 0.464 [0.432, 0.495] | 0.497 [0.468, 0.526] | 0.525 [0.494, 0.556] |
+| graphsage {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.222 [0.122, 0.323] | 0.697 [0.655, 0.739] | 0.440 [0.375, 0.505] | 0.502 [0.446, 0.558] | 0.465 [0.434, 0.496] | 0.502 [0.475, 0.529] | 0.528 [0.495, 0.561] |
+| gru {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.113 [0.014, 0.212] | 0.564 [0.489, 0.639] | 0.331 [0.258, 0.404] | 0.448 [0.347, 0.548] | 0.364 [0.313, 0.415] | 0.411 [0.369, 0.452] | 0.416 [0.367, 0.464] |
+| j48 {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.116 [0.023, 0.208] | 0.665 [0.619, 0.711] | 0.389 [0.325, 0.454] | 0.382 [0.322, 0.441] | 0.388 [0.351, 0.425] | 0.430 [0.396, 0.464] | 0.398 [0.367, 0.428] |
+| knn {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.103 [0.015, 0.191] | 0.685 [0.634, 0.735] | 0.406 [0.342, 0.470] | 0.407 [0.342, 0.473] | 0.400 [0.369, 0.431] | 0.443 [0.415, 0.471] | 0.445 [0.412, 0.478] |
+| lstm {"eligible_only": true, "split_strategy": "kfold"} | 50 | -0.011 [-0.163, 0.142] | 0.198 [-0.050, 0.447] | 0.362 [0.279, 0.446] | 0.096 [-0.015, 0.207] | 0.162 [0.066, 0.257] | 0.248 [0.186, 0.310] | 0.228 [0.161, 0.294] |
+| mlp {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.083 [-0.025, 0.192] | 0.683 [0.634, 0.731] | 0.426 [0.365, 0.488] | 0.358 [0.264, 0.453] | 0.388 [0.357, 0.419] | 0.435 [0.410, 0.459] | 0.466 [0.436, 0.497] |
+| naive_bayes {"eligible_only": true, "split_strategy": "kfold"} | 50 | -0.017 [-0.076, 0.043] | -0.026 [-0.085, 0.034] | 0.411 [0.350, 0.471] | 0.251 [0.190, 0.313] | 0.155 [0.129, 0.181] | 0.270 [0.250, 0.289] | 0.189 [0.171, 0.207] |
+| random_forest {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.065 [-0.022, 0.153] | 0.688 [0.633, 0.742] | 0.387 [0.319, 0.456] | 0.463 [0.409, 0.517] | 0.401 [0.367, 0.434] | 0.441 [0.412, 0.470] | 0.478 [0.453, 0.504] |
+| svm {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.109 [-0.008, 0.227] | 0.680 [0.625, 0.735] | 0.410 [0.330, 0.489] | 0.323 [0.258, 0.388] | 0.381 [0.340, 0.421] | 0.429 [0.393, 0.464] | 0.440 [0.403, 0.477] |
+| xgboost {"eligible_only": true, "split_strategy": "kfold"} | 50 | 0.116 [0.028, 0.204] | 0.690 [0.645, 0.735] | 0.419 [0.353, 0.485] | 0.456 [0.397, 0.514] | 0.420 [0.381, 0.460] | 0.461 [0.425, 0.497] | 0.496 [0.469, 0.523] |
+
+paired comparisons against codebert {"eligible_only": true, "split_strategy": "kfold"} (corrected resampled t-test, test/train ratio 0.286, Holm over groups per metric):
+  bilstm {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.153 [-0.229, -0.077] wins=0/50 p=0.000178 p_holm=0.0025
+  bilstm {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.094 [-0.234, +0.046] wins=11/50 p=0.184 p_holm=1
+  bilstm {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.202 [-0.372, -0.031] wins=4/50 p=0.0212 p_holm=0.255
+  bilstm {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.102 [-0.201, -0.003] wins=5/50 p=0.043 p_holm=0.688
+  bilstm {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.215 [-0.304, -0.127] wins=0/50 p=1.16e-05 p_holm=0.000128
+  bilstm_attention {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.033 [-0.080, +0.013] wins=11/50 p=0.155 p_holm=0.619
+  bilstm_attention {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.020 [-0.147, +0.106] wins=23/50 p=0.747 p_holm=1
+  bilstm_attention {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.021 [-0.071, +0.030] wins=18/50 p=0.411 p_holm=1
+  bilstm_attention {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.028 [-0.116, +0.061] wins=18/50 p=0.537 p_holm=1
+  bilstm_attention {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.065 [-0.138, +0.008] wins=8/50 p=0.0811 p_holm=0.324
+  cnn {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.091 [-0.137, -0.046] wins=1/50 p=0.000195 p_holm=0.00254
+  cnn {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.113 [-0.240, +0.013] wins=11/50 p=0.0779 p_holm=1
+  cnn {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.157 [-0.240, -0.073] wins=0/50 p=0.000434 p_holm=0.00608
+  cnn {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.043 [-0.125, +0.039] wins=15/50 p=0.297 p_holm=1
+  cnn {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.052 [-0.115, +0.012] wins=9/50 p=0.106 p_holm=0.324
+  decision_tree {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.082 [-0.123, -0.040] wins=0/50 p=0.000263 p_holm=0.00316
+  decision_tree {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.086 [-0.224, +0.052] wins=11/50 p=0.217 p_holm=1
+  decision_tree {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.038 [-0.108, +0.031] wins=14/50 p=0.272 p_holm=1
+  decision_tree {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.019 [-0.085, +0.046] wins=21/50 p=0.556 p_holm=1
+  decision_tree {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.183 [-0.253, -0.112] wins=0/50 p=4.03e-06 p_holm=5.24e-05
+  gat {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.026 [-0.067, +0.016] wins=10/50 p=0.219 p_holm=0.657
+  gat {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.011 [-0.135, +0.113] wins=24/50 p=0.86 p_holm=1
+  gat {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.045 [-0.113, +0.022] wins=12/50 p=0.183 p_holm=1
+  gat {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=+0.004 [-0.067, +0.074] wins=24/50 p=0.92 p_holm=1
+  gat {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.050 [-0.120, +0.019] wins=8/50 p=0.15 p_holm=0.324
+  gcn {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.011 [-0.052, +0.030] wins=17/50 p=0.593 p_holm=1
+  gcn {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=+0.013 [-0.099, +0.126] wins=27/50 p=0.812 p_holm=1
+  gcn {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.027 [-0.095, +0.040] wins=18/50 p=0.42 p_holm=1
+  gcn {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=+0.018 [-0.053, +0.089] wins=30/50 p=0.61 p_holm=1
+  gcn {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.048 [-0.125, +0.028] wins=13/50 p=0.212 p_holm=0.324
+  graphsage {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.009 [-0.052, +0.034] wins=25/50 p=0.667 p_holm=1
+  graphsage {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=+0.022 [-0.115, +0.158] wins=26/50 p=0.751 p_holm=1
+  graphsage {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.016 [-0.075, +0.042] wins=19/50 p=0.582 p_holm=1
+  graphsage {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=+0.021 [-0.048, +0.091] wins=31/50 p=0.541 p_holm=1
+  graphsage {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.064 [-0.128, +0.000] wins=8/50 p=0.05 p_holm=0.25
+  gru {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.111 [-0.169, -0.053] wins=0/50 p=0.000348 p_holm=0.00348
+  gru {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.088 [-0.236, +0.060] wins=12/50 p=0.237 p_holm=1
+  gru {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.149 [-0.230, -0.069] wins=0/50 p=0.00052 p_holm=0.00676
+  gru {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.087 [-0.178, +0.004] wins=7/50 p=0.0592 p_holm=0.888
+  gru {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.119 [-0.230, -0.008] wins=3/50 p=0.0363 p_holm=0.218
+  j48 {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.087 [-0.138, -0.036] wins=2/50 p=0.00123 p_holm=0.0074
+  j48 {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.085 [-0.242, +0.071] wins=11/50 p=0.279 p_holm=1
+  j48 {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.048 [-0.109, +0.013] wins=10/50 p=0.118 p_holm=1
+  j48 {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.029 [-0.112, +0.054] wins=17/50 p=0.486 p_holm=1
+  j48 {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.185 [-0.259, -0.110] wins=0/50 p=8.37e-06 p_holm=0.0001
+  knn {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.075 [-0.116, -0.033] wins=1/50 p=0.000702 p_holm=0.00562
+  knn {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.098 [-0.230, +0.035] wins=9/50 p=0.145 p_holm=1
+  knn {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.029 [-0.102, +0.044] wins=20/50 p=0.431 p_holm=1
+  knn {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.013 [-0.096, +0.071] wins=22/50 p=0.764 p_holm=1
+  knn {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.159 [-0.243, -0.075] wins=0/50 p=0.000394 p_holm=0.00355
+  lstm {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.313 [-0.409, -0.218] wins=0/50 p=2.81e-08 p_holm=4.21e-07
+  lstm {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.212 [-0.394, -0.029] wins=4/50 p=0.0242 p_holm=0.364
+  lstm {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.515 [-0.774, -0.256] wins=0/50 p=0.000218 p_holm=0.00326
+  lstm {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.056 [-0.156, +0.044] wins=12/50 p=0.268 p_holm=1
+  lstm {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.470 [-0.578, -0.362] wins=0/50 p=1.44e-11 p_holm=2.3e-10
+  mlp {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.087 [-0.134, -0.040] wins=1/50 p=0.000482 p_holm=0.00434
+  mlp {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.117 [-0.283, +0.049] wins=14/50 p=0.162 p_holm=1
+  mlp {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.030 [-0.091, +0.030] wins=15/50 p=0.317 p_holm=1
+  mlp {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=+0.008 [-0.061, +0.077] wins=25/50 p=0.815 p_holm=1
+  mlp {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.208 [-0.305, -0.111] wins=1/50 p=7.84e-05 p_holm=0.000784
+  naive_bayes {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.320 [-0.369, -0.271] wins=0/50 p=1.18e-17 p_holm=1.89e-16
+  naive_bayes {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.218 [-0.342, -0.094] wins=2/50 p=0.000927 p_holm=0.0148
+  naive_bayes {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.739 [-0.821, -0.658] wins=0/50 p=1.68e-23 p_holm=2.68e-22
+  naive_bayes {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.008 [-0.078, +0.063] wins=24/50 p=0.826 p_holm=1
+  naive_bayes {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.315 [-0.391, -0.239] wins=0/50 p=6.45e-11 p_holm=9.67e-10
+  random_forest {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.074 [-0.112, -0.036] wins=0/50 p=0.000294 p_holm=0.00323
+  random_forest {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.135 [-0.257, -0.014] wins=7/50 p=0.0293 p_holm=0.41
+  random_forest {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.026 [-0.089, +0.037] wins=19/50 p=0.414 p_holm=1
+  random_forest {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.031 [-0.112, +0.050] wins=15/50 p=0.443 p_holm=1
+  random_forest {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.103 [-0.172, -0.034] wins=1/50 p=0.00405 p_holm=0.0298
+  svm {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.094 [-0.147, -0.041] wins=1/50 p=0.000888 p_holm=0.00622
+  svm {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.091 [-0.257, +0.074] wins=13/50 p=0.274 p_holm=1
+  svm {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.033 [-0.096, +0.029] wins=14/50 p=0.287 p_holm=1
+  svm {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=-0.009 [-0.090, +0.073] wins=23/50 p=0.835 p_holm=1
+  svm {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.243 [-0.323, -0.163] wins=0/50 p=1.55e-07 p_holm=2.17e-06
+  xgboost {"eligible_only": true, "split_strategy": "kfold"} macro_mcc         diff=-0.054 [-0.097, -0.012] wins=3/50 p=0.0131 p_holm=0.0656
+  xgboost {"eligible_only": true, "split_strategy": "kfold"} feature_envy_mcc  diff=-0.084 [-0.213, +0.045] wins=11/50 p=0.195 p_holm=1
+  xgboost {"eligible_only": true, "split_strategy": "kfold"} long_method_mcc   diff=-0.023 [-0.082, +0.036] wins=19/50 p=0.437 p_holm=1
+  xgboost {"eligible_only": true, "split_strategy": "kfold"} blob_mcc          diff=+0.000 [-0.069, +0.069] wins=25/50 p=0.994 p_holm=1
+  xgboost {"eligible_only": true, "split_strategy": "kfold"} data_class_mcc    diff=-0.111 [-0.184, -0.038] wins=2/50 p=0.00372 p_holm=0.0298

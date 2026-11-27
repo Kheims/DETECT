@@ -1,0 +1,33 @@
+{
+  "created_at": "2026-11-20T00:40:33.037582",
+  "commit": "cc7c278ebc8ceb0fa7050faa82e74e527fb1997b",
+  "payload": {
+    "stage": "folds",
+    "config": {
+      "enabled": true,
+      "strategies": [
+        "kfold"
+      ],
+      "seeds": [
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51
+      ],
+      "n_folds": 5,
+      "val_ratio": 0.1,
+      "group_key": "repo_url"
+    },
+    "num_labels": 4,
+    "construction_fingerprint": "af277c2501e599d784431eebfc77b7ab74fed3f5d57ac3bf61d2d407a1f04544"
+  },
+  "outputs": {
+    "folds_json": "/mnt/beegfs/projects/code_smells_detection/detect/artifacts/majority_4770/cache/folds/336d0b40e31da3ea78ba3f02db655ba4ead58bc21ceec33c55a2d51575ce0914/folds.json"
+  }
+}

@@ -9,6 +9,7 @@ Records of our runs of the 17 models, one folder per label rule and dataset (see
 | `ds2_4367` | DS2 | original |
 | `ds2_4770` | DS2 | complete |
 | `majority_4367` | majority | original |
+| `majority_4770` | majority | complete |
 
 Each folder holds:
 
